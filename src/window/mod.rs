@@ -2,11 +2,12 @@ pub(crate) mod handle;
 pub(crate) mod id;
 pub mod mock;
 pub(crate) mod state;
-pub(crate) mod tracking;
+pub mod tracking;
 
 pub use id::{Urgency, WindowIdExt};
 pub use mock::MockWindow;
 pub use state::WindowState;
+pub use tracking::{raw_display_handle, raw_window_handle};
 
 use peniko::Color;
 use peniko::kurbo::{Point, Size};

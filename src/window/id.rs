@@ -1,10 +1,11 @@
 use crate::{ScreenLayout, ViewId, layout::screen_layout_for_window};
+use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use std::{cell::RefCell, collections::HashMap, sync::Arc};
 
 use super::tracking::{
-    force_window_repaint, monitor_bounds, root_view_id, window_inner_screen_bounds,
-    window_inner_screen_position, window_outer_screen_bounds, window_outer_screen_position,
-    with_window,
+    force_window_repaint, monitor_bounds, raw_display_handle, raw_window_handle, root_view_id,
+    window_inner_screen_bounds, window_inner_screen_position, window_outer_screen_bounds,
+    window_outer_screen_position, with_window,
 };
 use peniko::kurbo::{Point, Rect, Size};
 use winit::{
@@ -216,6 +217,27 @@ pub trait WindowIdExt: WindowIdExtSealed {
     /// Get the dots-per-inch scaling of this window or 1.0 if the platform does not
     /// support it (Android).
     fn scale(&self) -> f64;
+
+    /// Get the raw window handle for this window.
+    ///
+    /// This is useful for embedding native views or GPU surfaces within a Floem window.
+    /// Returns `None` if the window doesn't exist or the handle cannot be obtained.
+    ///
+    /// # Safety
+    ///
+    /// The returned [`RawWindowHandle`] is only valid while the window is alive.
+    /// The caller must ensure the handle is not used after the window is closed.
+    fn raw_window_handle(&self) -> Option<RawWindowHandle>;
+
+    /// Get the raw display handle for this window.
+    ///
+    /// This may be needed alongside [`raw_window_handle`](Self::raw_window_handle) for some
+    /// native operations (e.g., creating GPU contexts).
+    ///
+    /// # Safety
+    ///
+    /// The returned [`RawDisplayHandle`] is only valid while the window is alive.
+    fn raw_display_handle(&self) -> Option<RawDisplayHandle>;
 }
 
 impl WindowIdExt for WindowId {
@@ -278,6 +300,14 @@ impl WindowIdExt for WindowId {
 
     fn scale(&self) -> f64 {
         with_window(self, |window| window.scale_factor()).unwrap_or(1.0)
+    }
+
+    fn raw_window_handle(&self) -> Option<RawWindowHandle> {
+        raw_window_handle(self)
+    }
+
+    fn raw_display_handle(&self) -> Option<RawDisplayHandle> {
+        raw_display_handle(self)
     }
 }
 

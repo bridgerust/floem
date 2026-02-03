@@ -242,6 +242,9 @@ pub use view::{
 };
 pub use view::{Stack, StackOffset};
 pub use window::{Urgency, WindowIdExt, WindowState, close_window, new_window};
+pub use window::{raw_display_handle, raw_window_handle};
+/// Re-export raw_window_handle types that users will need when working with native handles.
+pub use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
 /// Re-export unit and theme modules from style for backward compatibility.
 pub use style::{theme, unit};

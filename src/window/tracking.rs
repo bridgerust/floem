@@ -5,6 +5,7 @@
 //! such as screen position.
 use crate::ViewId;
 use peniko::kurbo::{Point, Rect};
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
 use std::{
     collections::HashMap,
     sync::{Arc, OnceLock, RwLock},
@@ -272,4 +273,62 @@ pub fn window_outer_screen_bounds(id: &WindowId) -> Option<Rect> {
         .unwrap_or(None)
     })
     .unwrap_or(None)
+}
+
+/// Get the raw window handle for a given [`WindowId`].
+///
+/// Returns the platform-specific window handle that can be used for native embedding
+/// (e.g., embedding GPU surfaces, native video players, or platform-specific views).
+///
+/// # Safety
+///
+/// The returned [`RawWindowHandle`] is only valid while the window is alive.
+/// The caller must ensure the handle is not used after the window is closed.
+///
+/// # Example
+///
+/// ```ignore
+/// use floem::window::{WindowIdExt, raw_window_handle};
+///
+/// if let Some(window_id) = view_id.window_id() {
+///     if let Some(handle) = raw_window_handle(&window_id) {
+///         // Use handle for native embedding
+///     }
+/// }
+/// ```
+pub fn raw_window_handle(window_id: &WindowId) -> Option<RawWindowHandle> {
+    with_window(window_id, |window| {
+        window.window_handle().ok().map(|h| h.as_raw())
+    })
+    .flatten()
+}
+
+/// Get the raw display handle for a given [`WindowId`].
+///
+/// Returns the platform-specific display handle that may be needed alongside
+/// the window handle for some native operations (e.g., creating GPU contexts).
+///
+/// # Safety
+///
+/// The returned [`RawDisplayHandle`] is only valid while the window is alive.
+/// The caller must ensure the handle is not used after the window is closed.
+pub fn raw_display_handle(window_id: &WindowId) -> Option<RawDisplayHandle> {
+    with_window(window_id, |window| {
+        window.display_handle().ok().map(|h| h.as_raw())
+    })
+    .flatten()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_raw_window_handle_functions_exist() {
+        // Verify the functions are callable and have the expected signatures.
+        // We can't easily test with a real WindowId in unit tests since WindowId
+        // is opaque and requires a real window, but we verify the API is accessible.
+        let _: fn(&winit::window::WindowId) -> Option<raw_window_handle::RawWindowHandle> =
+            super::raw_window_handle;
+        let _: fn(&winit::window::WindowId) -> Option<raw_window_handle::RawDisplayHandle> =
+            super::raw_display_handle;
+    }
 }
