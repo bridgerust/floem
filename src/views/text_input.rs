@@ -20,11 +20,8 @@ use crate::{peniko::color::palette, style::Style, view::View};
 
 use std::{any::Any, ops::Range};
 
+use crate::platform::{Duration, Instant};
 use crate::text::{Attrs, AttrsList, FamilyOwned, TextLayout};
-#[cfg(not(target_arch = "wasm32"))]
-use std::time::{Duration, Instant};
-#[cfg(target_arch = "wasm32")]
-use web_time::{Duration, Instant};
 
 use peniko::Brush;
 use peniko::kurbo::{Point, Rect, Size};
@@ -72,8 +69,9 @@ struct BufferState {
 impl BufferState {
     fn update(&mut self, update: impl FnOnce(&mut String)) {
         self.buffer.update(|s| {
+            let last = s.clone();
             update(s);
-            self.last_buffer.clone_from(s);
+            self.last_buffer = last;
         });
     }
 
@@ -1107,10 +1105,10 @@ fn get_dbl_click_selection(glyph_idx: usize, buffer: &str) -> Range<usize> {
     }
 
     // left-over non-alphanumeric char sequence at the end of the buffer(after the last word)
-    if let Some(last) = selectable_ranges.last() {
-        if last.end != buffer.len() {
-            selectable_ranges.push(last.end..buffer.len());
-        }
+    if let Some(last) = selectable_ranges.last()
+        && last.end != buffer.len()
+    {
+        selectable_ranges.push(last.end..buffer.len());
     }
 
     for range in selectable_ranges {
@@ -1257,6 +1255,10 @@ impl View for TextInput {
             } => {
                 if self.is_focused {
                     self.buffer.update(|buf| {
+                        if let Some(selection) = self.selection.take() {
+                            self.cursor_glyph_idx = selection.start;
+                            buf.replace_range(selection, "");
+                        }
                         // If the index falls inside a character, delete that character too.
                         // This only happens on desynchronized input:
                         // 1. IME sends a request with index on code point boundary
@@ -1276,6 +1278,7 @@ impl View for TextInput {
                             .map(|i| i + self.cursor_glyph_idx)
                             .unwrap_or(buf.len());
                         buf.replace_range(before_start..after_end, "");
+                        self.cursor_glyph_idx = before_start;
                     });
                     true
                 } else {

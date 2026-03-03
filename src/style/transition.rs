@@ -12,10 +12,7 @@ use peniko::kurbo::{self, Point, Stroke};
 use std::rc::Rc;
 use taffy::prelude::{auto, fr};
 
-#[cfg(not(target_arch = "wasm32"))]
-use std::time::{Duration, Instant};
-#[cfg(target_arch = "wasm32")]
-use web_time::{Duration, Instant};
+use crate::platform::{Duration, Instant};
 
 use crate::animate::{Bezier, Easing, Linear, Spring};
 use crate::theme::StyleThemeExt;
@@ -69,16 +66,16 @@ impl<T: StylePropValue> TransitionState<T> {
             if let Some(transition) = &self.transition {
                 let time = now.saturating_duration_since(active.start);
                 let time_percent = time.as_secs_f64() / transition.duration.as_secs_f64();
-                if time < transition.duration || !transition.easing.finished(time_percent) {
-                    if let Some(i) = T::interpolate(
+                if (time < transition.duration || !transition.easing.finished(time_percent))
+                    && let Some(i) = T::interpolate(
                         &active.before,
                         &active.after,
                         transition.easing.eval(time_percent),
-                    ) {
-                        active.current = i;
-                        *request_transition = true;
-                        return true;
-                    }
+                    )
+                {
+                    active.current = i;
+                    *request_transition = true;
+                    return true;
                 }
             }
             // time has past duration, or the value is not interpolatable
