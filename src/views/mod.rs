@@ -142,6 +142,9 @@ pub use drag_resize_window_area::*;
 mod img;
 pub use img::*;
 
+mod video_frame;
+pub use video_frame::*;
+
 mod button;
 pub use button::*;
 

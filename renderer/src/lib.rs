@@ -22,6 +22,20 @@ pub struct Img<'a> {
     pub hash: &'a [u8],
 }
 
+/// A raw RGBA8 frame uploaded to a GPU texture and drawn as a quad, bypassing
+/// the renderer's glyph/image atlas. Intended for large, frequently-updated
+/// surfaces such as a live emulator/video stream.
+///
+/// `id` is a stable key for the per-surface texture cache: reuse the same id
+/// across frames so the GPU texture is updated in place. `data` must be
+/// `width * height * 4` bytes (RGBA8, unmultiplied alpha).
+pub struct ExternalTexture<'a> {
+    pub id: u64,
+    pub data: &'a [u8],
+    pub width: u32,
+    pub height: u32,
+}
+
 pub trait Renderer {
     fn begin(&mut self, capture: bool);
 
@@ -76,6 +90,13 @@ pub trait Renderer {
     fn draw_svg<'b>(&mut self, svg: Svg<'b>, rect: Rect, brush: Option<impl Into<BrushRef<'b>>>);
 
     fn draw_img(&mut self, img: Img<'_>, rect: Rect);
+
+    /// Draw a raw RGBA8 frame as a textured quad in `rect`, bypassing the atlas.
+    /// Default is a no-op for backends without GPU texture support (tiny_skia);
+    /// the vger backend implements it.
+    fn draw_external_texture(&mut self, texture: ExternalTexture<'_>, rect: Rect) {
+        let _ = (texture, rect);
+    }
 
     fn finish(&mut self) -> Option<peniko::ImageBrush>;
 

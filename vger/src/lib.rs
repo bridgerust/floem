@@ -6,7 +6,7 @@ use anyhow::Result;
 use floem_renderer::gpu_resources::GpuResources;
 use floem_renderer::swash::SwashScaler;
 use floem_renderer::text::{CacheKey, LayoutRun};
-use floem_renderer::{tiny_skia, Img, Renderer};
+use floem_renderer::{tiny_skia, ExternalTexture, Img, Renderer};
 use floem_vger_rs::{Image, PaintIndex, PixelFormat, Vger};
 use image::EncodableLayout;
 use peniko::kurbo::{Size, Stroke};
@@ -19,6 +19,9 @@ use peniko::{Blob, ImageData, LinearGradientPosition};
 use wgpu::{
     Adapter, Device, DeviceType, Queue, StoreOp, Surface, SurfaceConfiguration, TextureFormat,
 };
+
+mod external_texture;
+use external_texture::ExtRenderer;
 
 pub struct VgerRenderer {
     device: Arc<Device>,
@@ -34,6 +37,7 @@ pub struct VgerRenderer {
     capture: bool,
     swash_scaler: SwashScaler,
     adapter: Adapter,
+    ext: ExtRenderer,
 }
 
 impl VgerRenderer {
@@ -93,6 +97,8 @@ impl VgerRenderer {
 
         let vger = floem_vger_rs::Vger::new(device.clone(), queue.clone(), texture_format);
 
+        let ext = ExtRenderer::new(&device, texture_format);
+
         Ok(Self {
             device,
             queue,
@@ -106,6 +112,7 @@ impl VgerRenderer {
             capture: false,
             swash_scaler: SwashScaler::new(font_embolden),
             adapter,
+            ext,
         })
     }
 
@@ -299,6 +306,7 @@ impl Renderer for VgerRenderer {
         }
 
         self.transform = Affine::IDENTITY;
+        self.ext.begin_frame();
         self.vger.begin(
             self.config.width as f32,
             self.config.height as f32,
@@ -687,6 +695,37 @@ impl Renderer for VgerRenderer {
         self.clip = None;
     }
 
+    fn draw_external_texture(&mut self, texture: ExternalTexture<'_>, rect: Rect) {
+        let r = self.transform.transform_rect_bbox(rect);
+        let s = self.scale;
+        let w = self.config.width.max(1) as f32;
+        let h = self.config.height.max(1) as f32;
+        let (px0, py0, px1, py1) = (
+            (r.x0 * s) as f32,
+            (r.y0 * s) as f32,
+            (r.x1 * s) as f32,
+            (r.y1 * s) as f32,
+        );
+        let l = px0 / w * 2.0 - 1.0;
+        let rr = px1 / w * 2.0 - 1.0;
+        let t = 1.0 - py0 / h * 2.0;
+        let b = 1.0 - py1 / h * 2.0;
+        // 6 verts (two triangles): pos.xy in NDC, uv.xy with origin top-left.
+        let verts: [f32; 24] = [
+            l, t, 0.0, 0.0, rr, t, 1.0, 0.0, l, b, 0.0, 1.0, l, b, 0.0, 1.0, rr, t, 1.0, 0.0, rr,
+            b, 1.0, 1.0,
+        ];
+        self.ext.draw(
+            &self.device,
+            &self.queue,
+            texture.id,
+            texture.data,
+            texture.width,
+            texture.height,
+            verts,
+        );
+    }
+
     fn finish(&mut self) -> Option<peniko::ImageBrush> {
         if self.capture {
             self.render_image()
@@ -712,6 +751,7 @@ impl Renderer for VgerRenderer {
                 };
 
                 self.vger.encode(&desc);
+                self.ext.flush(&self.device, &self.queue, &texture_view);
                 frame.present();
             }
             None

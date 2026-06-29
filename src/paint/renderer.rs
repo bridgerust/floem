@@ -50,6 +50,7 @@
 use std::sync::Arc;
 
 use crate::kurbo::Point;
+use floem_renderer::ExternalTexture;
 use floem_renderer::Img;
 use floem_renderer::gpu_resources::GpuResources;
 use floem_renderer::text::LayoutRun;
@@ -376,6 +377,23 @@ impl floem_renderer::Renderer for Renderer {
             }
             Renderer::TinySkia(v) => {
                 v.draw_img(img, rect);
+            }
+            Renderer::Uninitialized { .. } => {}
+        }
+    }
+
+    fn draw_external_texture(&mut self, texture: ExternalTexture<'_>, rect: Rect) {
+        match self {
+            #[cfg(feature = "vello")]
+            Renderer::Vello(v) => {
+                v.draw_external_texture(texture, rect);
+            }
+            #[cfg(not(feature = "vello"))]
+            Renderer::Vger(v) => {
+                v.draw_external_texture(texture, rect);
+            }
+            Renderer::TinySkia(v) => {
+                v.draw_external_texture(texture, rect);
             }
             Renderer::Uninitialized { .. } => {}
         }
