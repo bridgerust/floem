@@ -697,14 +697,27 @@ impl Renderer for VgerRenderer {
 
     fn draw_external_texture(&mut self, texture: ExternalTexture<'_>, rect: Rect) {
         let r = self.transform.transform_rect_bbox(rect);
+        // Preserve the frame's aspect ratio: fit it inside `r` (letterbox /
+        // pillarbox), centered, instead of stretching to fill.
+        let rw = r.width().max(1.0);
+        let rh = r.height().max(1.0);
+        let frame_aspect = texture.width.max(1) as f64 / texture.height.max(1) as f64;
+        let rect_aspect = rw / rh;
+        let (dw, dh) = if frame_aspect > rect_aspect {
+            (rw, rw / frame_aspect)
+        } else {
+            (rh * frame_aspect, rh)
+        };
+        let cx = r.x0 + rw / 2.0;
+        let cy = r.y0 + rh / 2.0;
         let s = self.scale;
         let w = self.config.width.max(1) as f32;
         let h = self.config.height.max(1) as f32;
         let (px0, py0, px1, py1) = (
-            (r.x0 * s) as f32,
-            (r.y0 * s) as f32,
-            (r.x1 * s) as f32,
-            (r.y1 * s) as f32,
+            ((cx - dw / 2.0) * s) as f32,
+            ((cy - dh / 2.0) * s) as f32,
+            ((cx + dw / 2.0) * s) as f32,
+            ((cy + dh / 2.0) * s) as f32,
         );
         let l = px0 / w * 2.0 - 1.0;
         let rr = px1 / w * 2.0 - 1.0;
