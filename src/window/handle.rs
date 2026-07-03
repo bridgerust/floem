@@ -1,4 +1,4 @@
-#[cfg(not(target_arch = "wasm32"))]
+﻿#[cfg(not(target_arch = "wasm32"))]
 use std::collections::HashMap;
 use std::{cell::RefCell, mem, rc::Rc, sync::Arc};
 
@@ -779,6 +779,24 @@ impl WindowHandle {
     }
 
     fn process_central_messages(&self) {
+        // Garbage-collect retained rootless messages after a touch budget.
+        //
+        // Messages whose ViewId never resolves a root (views removed before
+        // their pending updates were claimed — e.g. rows churned out of a
+        // dyn_stack — or ids created but never attached) used to be retained
+        // FOREVER and re-scanned on every pass. Under a steady producer (a
+        // live device log stream churning list rows) the pile grows without
+        // bound and every event-loop wakeup re-walks all of it: the app pegs
+        // one core and effectively freezes. This is the garbage-collection
+        // mechanism the comment below anticipated; the budget is generous —
+        // construction-time messages resolve their root within a frame or
+        // two, so surviving many passes means the view is gone for good.
+        const RETAIN_TOUCH_BUDGET: u32 = 64;
+        thread_local! {
+            static RETAIN_TOUCHES: RefCell<std::collections::HashMap<ViewId, u32>> =
+                RefCell::new(std::collections::HashMap::new());
+        }
+
         CENTRAL_UPDATE_MESSAGES.with_borrow_mut(|central_msgs| {
             if !central_msgs.is_empty() {
                 UPDATE_MESSAGES.with_borrow_mut(|msgs| {
@@ -788,22 +806,41 @@ impl WindowHandle {
                         std::mem::replace(central_msgs, Vec::with_capacity(central_msgs.len()));
                     for (id, msg) in removed_central_msgs {
                         if let Some(root) = id.root() {
+                            RETAIN_TOUCHES.with_borrow_mut(|t| {
+                                t.remove(&id);
+                            });
                             let msgs = msgs.entry(root).or_default();
                             msgs.push(msg);
+                        } else if !id.is_in_storage() {
+                            // The view was removed (`ViewId::remove()`) with
+                            // this message still pending — it can never be
+                            // routed. Drop it immediately: a steady producer
+                            // of such orphans (e.g. list rows churned out of
+                            // a dyn_stack by a live log stream) used to grow
+                            // this queue without bound, and every event-loop
+                            // wake re-scanned the whole pile — pegging a core
+                            // and freezing the app.
+                            RETAIN_TOUCHES.with_borrow_mut(|t| {
+                                t.remove(&id);
+                            });
                         } else {
                             // Messages that are not for our root get put back - they may
                             // belong to another window, or may be construction-time messages
                             // for a View that does not yet have a window but will momentarily.
-                            //
-                            // Note that if there is a plethora of events for ids which were created
-                            // but never assigned to any view, they will probably pile up in here,
-                            // and if that becomes a real problem, we may want a garbage collection
-                            // mechanism, or give every message a max-touch-count and discard it
-                            // if it survives too many iterations through here. Unclear if there
-                            // are real-world app development patterns where that could actually be
-                            // an issue. Since any such mechanism would have some overhead, there
-                            // should be a proven need before building one.
-                            central_msgs.push((id, msg));
+                            // Rootless messages are dropped once they exhaust the touch
+                            // budget (see above) instead of piling up forever.
+                            let touches = RETAIN_TOUCHES.with_borrow_mut(|t| {
+                                let n = t.entry(id).or_insert(0);
+                                *n += 1;
+                                *n
+                            });
+                            if touches <= RETAIN_TOUCH_BUDGET {
+                                central_msgs.push((id, msg));
+                            } else {
+                                RETAIN_TOUCHES.with_borrow_mut(|t| {
+                                    t.remove(&id);
+                                });
+                            }
                         }
                     }
                 });
@@ -821,10 +858,30 @@ impl WindowHandle {
                     let unprocessed = &mut *central_msgs.borrow_mut();
                     for (id, msg) in removed_central_msgs {
                         if let Some(root) = id.root() {
+                            RETAIN_TOUCHES.with_borrow_mut(|t| {
+                                t.remove(&id);
+                            });
                             let msgs = msgs.entry(root).or_default();
                             msgs.push((id, msg));
+                        } else if !id.is_in_storage() {
+                            // Removed view — unroutable; drop (see above).
+                            RETAIN_TOUCHES.with_borrow_mut(|t| {
+                                t.remove(&id);
+                            });
                         } else {
-                            unprocessed.push((id, msg));
+                            // Same touch-budget GC as the block above.
+                            let touches = RETAIN_TOUCHES.with_borrow_mut(|t| {
+                                let n = t.entry(id).or_insert(0);
+                                *n += 1;
+                                *n
+                            });
+                            if touches <= RETAIN_TOUCH_BUDGET {
+                                unprocessed.push((id, msg));
+                            } else {
+                                RETAIN_TOUCHES.with_borrow_mut(|t| {
+                                    t.remove(&id);
+                                });
+                            }
                         }
                     }
                 });

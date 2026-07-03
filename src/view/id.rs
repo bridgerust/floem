@@ -346,6 +346,14 @@ impl ViewId {
         VIEW_STORAGE.with_borrow(|s| s.parent.get(*self).cloned().flatten())
     }
 
+    /// Whether this id still exists in view storage. `ViewId::remove()`
+    /// deletes the id, so `false` means the view is gone for good and any
+    /// message addressed to it can never be routed — the central-queue GC
+    /// uses this to drop such messages instead of retaining them forever.
+    pub(crate) fn is_in_storage(&self) -> bool {
+        VIEW_STORAGE.with_borrow(|s| s.view_ids.contains_key(*self))
+    }
+
     /// Get the root view of the window that the given view is in
     pub fn root(&self) -> Option<ViewId> {
         VIEW_STORAGE.with_borrow_mut(|s| {
