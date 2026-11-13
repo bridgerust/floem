@@ -14,8 +14,8 @@ use floem::peniko::{Brush, Color};
 use floem::prelude::*;
 use floem::prop;
 use floem::reactive::RwSignal;
-use floem::style::{Background, FontWeight, Style, TextColor};
-use floem::text::Weight;
+use floem::style::{Background, ContextRef, ContextValue, ExprStyle, FontWeight, Style, TextColor};
+use floem::text::FontWeight as Weight;
 use floem_test::prelude::*;
 use serial_test::serial;
 
@@ -51,14 +51,45 @@ impl floem::style::StylePropValue for TestTheme {
 
 /// Helper extension trait for using the test theme
 trait TestThemeExt {
-    fn with_test_theme(self, f: impl Fn(Self, &TestTheme) -> Self + 'static) -> Self
+    fn with_test_theme(
+        self,
+        f: impl Fn(ExprStyle, ContextRef<TestThemeProp>) -> ExprStyle + 'static,
+    ) -> Self
     where
         Self: Sized;
 }
 
 impl TestThemeExt for Style {
-    fn with_test_theme(self, f: impl Fn(Self, &TestTheme) -> Self + 'static) -> Self {
-        self.with_context::<TestThemeProp>(f)
+    fn with_test_theme(
+        self,
+        f: impl Fn(ExprStyle, ContextRef<TestThemeProp>) -> ExprStyle + 'static,
+    ) -> Self {
+        self.with::<TestThemeProp>(f)
+    }
+}
+
+trait TestThemeRefExt {
+    fn primary_bg(self) -> ContextValue<Color>;
+    fn secondary_bg(self) -> ContextValue<Color>;
+    fn primary_color(self) -> ContextValue<Color>;
+    fn secondary_color(self) -> ContextValue<Color>;
+}
+
+impl TestThemeRefExt for ContextRef<TestThemeProp> {
+    fn primary_bg(self) -> ContextValue<Color> {
+        self.def(|theme| theme.primary_bg)
+    }
+
+    fn secondary_bg(self) -> ContextValue<Color> {
+        self.def(|theme| theme.secondary_bg)
+    }
+
+    fn primary_color(self) -> ContextValue<Color> {
+        self.def(|theme| theme.primary_color)
+    }
+
+    fn secondary_color(self) -> ContextValue<Color> {
+        self.def(|theme| theme.secondary_color)
     }
 }
 
@@ -67,6 +98,7 @@ impl TestThemeExt for Style {
 #[test]
 #[serial]
 fn test_signal_outside_with_context_is_tracked() {
+    let test_root = TestRoot::new();
     let is_active = RwSignal::new(false);
 
     let view = Empty::new().style(move |s| {
@@ -75,19 +107,19 @@ fn test_signal_outside_with_context_is_tracked() {
         s.size(100.0, 100.0).with_test_theme(move |s, theme| {
             // Use the captured `active` value
             if active {
-                s.background(theme.primary_bg)
-                    .color(theme.primary_color)
-                    .font_weight(Weight::BOLD)
+                s.background(theme.primary_bg())
+                    .color(theme.primary_color())
+                    .font_weight(theme.def(|_| Weight::BOLD))
             } else {
-                s.background(theme.secondary_bg)
-                    .color(theme.secondary_color)
-                    .font_weight(Weight::NORMAL)
+                s.background(theme.secondary_bg())
+                    .color(theme.secondary_color())
+                    .font_weight(theme.def(|_| Weight::NORMAL))
             }
         })
     });
     let id = view.view_id();
 
-    let mut harness = HeadlessHarness::new_with_size(view, 100.0, 100.0);
+    let mut harness = HeadlessHarness::new_with_size(test_root, view, 100.0, 100.0);
 
     // Initial state: not active
     let style = harness.get_computed_style(id);
@@ -141,6 +173,7 @@ fn test_signal_outside_with_context_is_tracked() {
 #[test]
 #[serial]
 fn test_signal_inside_with_context_is_tracked() {
+    let test_root = TestRoot::new();
     let is_active = RwSignal::new(false);
 
     let view = Empty::new().style(move |s| {
@@ -148,19 +181,19 @@ fn test_signal_inside_with_context_is_tracked() {
             // Signal accessed INSIDE with_context - tracked via probing
             let active = is_active.get();
             if active {
-                s.background(theme.primary_bg)
-                    .color(theme.primary_color)
-                    .font_weight(Weight::BOLD)
+                s.background(theme.primary_bg())
+                    .color(theme.primary_color())
+                    .font_weight(theme.def(|_| Weight::BOLD))
             } else {
-                s.background(theme.secondary_bg)
-                    .color(theme.secondary_color)
-                    .font_weight(Weight::NORMAL)
+                s.background(theme.secondary_bg())
+                    .color(theme.secondary_color())
+                    .font_weight(theme.def(|_| Weight::NORMAL))
             }
         })
     });
     let id = view.view_id();
 
-    let mut harness = HeadlessHarness::new_with_size(view, 100.0, 100.0);
+    let mut harness = HeadlessHarness::new_with_size(test_root, view, 100.0, 100.0);
 
     // Initial state: not active
     let style = harness.get_computed_style(id);
@@ -217,6 +250,7 @@ fn test_signal_inside_with_context_is_tracked() {
 #[test]
 #[serial]
 fn test_closure_signal_inside_with_context() {
+    let test_root = TestRoot::new();
     use std::rc::Rc;
 
     let active_item = RwSignal::new("none");
@@ -224,27 +258,29 @@ fn test_closure_signal_inside_with_context() {
     // This pattern matches SidebarMenuButton:
     // - is_active is a closure that reads a signal
     // - The closure is called inside with_context
-    let is_active: Rc<dyn Fn() -> bool> = Rc::new(move || active_item.get() == "first");
+    let is_active: Rc<dyn Fn() -> bool> = Rc::new(move || active_item.with(|&ai| ai == "first"));
 
     let view = Empty::new().style(move |s| {
         let is_active = is_active.clone();
+        // best practive to be run once here because with_test_theme is lazy
+        // is_active();
         s.size(100.0, 100.0).with_test_theme(move |s, theme| {
             // Call the is_active closure inside with_context
             let active = is_active();
             if active {
-                s.background(theme.primary_bg)
-                    .color(theme.primary_color)
-                    .font_weight(Weight::BOLD)
+                s.background(theme.primary_bg())
+                    .color(theme.primary_color())
+                    .font_weight(theme.def(|_| Weight::BOLD))
             } else {
-                s.background(theme.secondary_bg)
-                    .color(theme.secondary_color)
-                    .font_weight(Weight::NORMAL)
+                s.background(theme.secondary_bg())
+                    .color(theme.secondary_color())
+                    .font_weight(theme.def(|_| Weight::NORMAL))
             }
         })
     });
     let id = view.view_id();
 
-    let mut harness = HeadlessHarness::new_with_size(view, 100.0, 100.0);
+    let mut harness = HeadlessHarness::new_with_size(test_root, view, 100.0, 100.0);
 
     // Initial state: active_item is "none", so is_active() returns false
     let style = harness.get_computed_style(id);
@@ -274,14 +310,17 @@ fn test_closure_signal_inside_with_context() {
 #[test]
 #[serial]
 fn test_multiple_views_with_signals_inside_with_context() {
+    let test_root = TestRoot::new();
     let active_index = RwSignal::new(0usize);
 
     let view0 = Empty::new().style(move |s| {
         s.size(50.0, 50.0).with_test_theme(move |s, theme| {
             if active_index.get() == 0 {
-                s.background(theme.primary_bg).font_weight(Weight::BOLD)
+                s.background(theme.primary_bg())
+                    .font_weight(theme.def(|_| Weight::BOLD))
             } else {
-                s.background(theme.secondary_bg).font_weight(Weight::NORMAL)
+                s.background(theme.secondary_bg())
+                    .font_weight(theme.def(|_| Weight::NORMAL))
             }
         })
     });
@@ -290,9 +329,11 @@ fn test_multiple_views_with_signals_inside_with_context() {
     let view1 = Empty::new().style(move |s| {
         s.size(50.0, 50.0).with_test_theme(move |s, theme| {
             if active_index.get() == 1 {
-                s.background(theme.primary_bg).font_weight(Weight::BOLD)
+                s.background(theme.primary_bg())
+                    .font_weight(theme.def(|_| Weight::BOLD))
             } else {
-                s.background(theme.secondary_bg).font_weight(Weight::NORMAL)
+                s.background(theme.secondary_bg())
+                    .font_weight(theme.def(|_| Weight::NORMAL))
             }
         })
     });
@@ -300,7 +341,7 @@ fn test_multiple_views_with_signals_inside_with_context() {
 
     let container = Stack::new((view0, view1)).style(|s| s.size(100.0, 100.0));
 
-    let mut harness = HeadlessHarness::new_with_size(container, 100.0, 100.0);
+    let mut harness = HeadlessHarness::new_with_size(test_root, container, 100.0, 100.0);
 
     // Initial: view0 active (BOLD), view1 inactive (NORMAL)
     let style0 = harness.get_computed_style(id0);
@@ -340,30 +381,31 @@ fn test_multiple_views_with_signals_inside_with_context() {
 #[test]
 #[serial]
 fn test_click_changes_signal_inside_with_context() {
+    let test_root = TestRoot::new();
     let is_active = RwSignal::new(false);
 
     let button = Empty::new()
         .style(move |s| {
             s.size(100.0, 50.0).with_test_theme(move |s, theme| {
                 if is_active.get() {
-                    s.background(theme.primary_bg)
-                        .color(theme.primary_color)
-                        .font_weight(Weight::BOLD)
+                    s.background(theme.primary_bg())
+                        .color(theme.primary_color())
+                        .font_weight(theme.def(|_| Weight::BOLD))
                 } else {
-                    s.background(theme.secondary_bg)
-                        .color(theme.secondary_color)
-                        .font_weight(Weight::NORMAL)
+                    s.background(theme.secondary_bg())
+                        .color(theme.secondary_color())
+                        .font_weight(theme.def(|_| Weight::NORMAL))
                 }
             })
         })
-        .on_click_stop(move |_| {
+        .action(move || {
             is_active.set(true);
         });
     let id = button.view_id();
 
     let container = Stack::new((button,)).style(|s| s.size(100.0, 100.0));
 
-    let mut harness = HeadlessHarness::new_with_size(container, 100.0, 100.0);
+    let mut harness = HeadlessHarness::new_with_size(test_root, container, 100.0, 100.0);
 
     // Initial: not active
     let style = harness.get_computed_style(id);
@@ -396,6 +438,7 @@ fn test_click_changes_signal_inside_with_context() {
 #[test]
 #[serial]
 fn test_child_label_inherits_font_weight_from_parent() {
+    let test_root = TestRoot::new();
     use floem::views::Label;
 
     let is_active = RwSignal::new(false);
@@ -408,16 +451,16 @@ fn test_child_label_inherits_font_weight_from_parent() {
     let container = Stack::new((label,)).style(move |s| {
         s.size(100.0, 50.0).with_test_theme(move |s, _theme| {
             if is_active.get() {
-                s.font_weight(Weight::BOLD)
+                s.font_weight(_theme.def(|_| Weight::BOLD))
             } else {
-                s.font_weight(Weight::NORMAL)
+                s.font_weight(_theme.def(|_| Weight::NORMAL))
             }
         })
     });
 
     let outer = Stack::new((container,)).style(|s| s.size(100.0, 100.0));
 
-    let mut harness = HeadlessHarness::new_with_size(outer, 100.0, 100.0);
+    let mut harness = HeadlessHarness::new_with_size(test_root, outer, 100.0, 100.0);
 
     // Initial: parent has NORMAL, label should inherit NORMAL
     let label_style = harness.get_computed_style(label_id);
@@ -449,6 +492,7 @@ fn test_child_label_inherits_font_weight_from_parent() {
 #[test]
 #[serial]
 fn test_hover_selector_with_parent_theme_colors() {
+    let root = TestRoot::new();
     // Create a custom theme with different colors than defaults
     let custom_theme = TestTheme {
         primary_bg: palette::css::RED,      // Different from default BLUE
@@ -460,17 +504,17 @@ fn test_hover_selector_with_parent_theme_colors() {
     // Child uses hover with theme colors
     let child = Empty::new().style(|s| {
         s.size(50.0, 50.0).with_test_theme(|s, theme| {
-            s.background(theme.secondary_bg)
-                .hover(|s| s.background(theme.primary_bg))
+            s.background(theme.secondary_bg())
+                .hover(|s| s.background(theme.primary_bg()))
         })
     });
     let child_id = child.view_id();
 
     // Parent sets the custom theme
-    let root =
+    let root_view =
         Container::new(child).style(move |s| s.size(100.0, 100.0).set(TestThemeProp, custom_theme));
 
-    let mut harness = HeadlessHarness::new_with_size(root, 100.0, 100.0);
+    let mut harness = HeadlessHarness::new_with_size(root, root_view, 100.0, 100.0);
 
     // Initial: should use parent's secondary_bg (YELLOW), not default (GRAY)
     let style = harness.get_computed_style(child_id);
@@ -498,6 +542,7 @@ fn test_hover_selector_with_parent_theme_colors() {
 #[test]
 #[serial]
 fn test_active_selector_with_parent_theme_colors() {
+    let root = TestRoot::new();
     let custom_theme = TestTheme {
         primary_bg: palette::css::ORANGE,
         secondary_bg: palette::css::CYAN,
@@ -507,16 +552,16 @@ fn test_active_selector_with_parent_theme_colors() {
 
     let child = Empty::new().style(|s| {
         s.size(50.0, 50.0).with_test_theme(|s, theme| {
-            s.background(theme.secondary_bg)
-                .active(|s| s.background(theme.primary_bg))
+            s.background(theme.secondary_bg())
+                .active(|s| s.background(theme.primary_bg()))
         })
     });
     let child_id = child.view_id();
 
-    let root =
+    let root_view =
         Container::new(child).style(move |s| s.size(100.0, 100.0).set(TestThemeProp, custom_theme));
 
-    let mut harness = HeadlessHarness::new_with_size(root, 100.0, 100.0);
+    let mut harness = HeadlessHarness::new_with_size(root, root_view, 100.0, 100.0);
 
     // Initial: CYAN from parent theme
     let style = harness.get_computed_style(child_id);
@@ -544,6 +589,7 @@ fn test_active_selector_with_parent_theme_colors() {
 #[test]
 #[serial]
 fn test_multiple_selectors_with_parent_theme_colors() {
+    let root = TestRoot::new();
     let custom_theme = TestTheme {
         primary_bg: palette::css::RED,
         secondary_bg: palette::css::GREEN,
@@ -553,17 +599,17 @@ fn test_multiple_selectors_with_parent_theme_colors() {
 
     let child = Empty::new().style(|s| {
         s.size(50.0, 50.0).with_test_theme(|s, theme| {
-            s.background(theme.secondary_bg) // GREEN
-                .hover(|s| s.background(theme.primary_bg)) // RED on hover
-                .active(|s| s.background(theme.primary_color)) // BLUE on active
+            s.background(theme.secondary_bg()) // GREEN
+                .hover(|s| s.background(theme.primary_bg())) // RED on hover
+                .active(|s| s.background(theme.primary_color())) // BLUE on active
         })
     });
     let child_id = child.view_id();
 
-    let root =
+    let root_view =
         Container::new(child).style(move |s| s.size(100.0, 100.0).set(TestThemeProp, custom_theme));
 
-    let mut harness = HeadlessHarness::new_with_size(root, 100.0, 100.0);
+    let mut harness = HeadlessHarness::new_with_size(root, root_view, 100.0, 100.0);
 
     // Initial: GREEN
     let style = harness.get_computed_style(child_id);
@@ -596,6 +642,7 @@ fn test_multiple_selectors_with_parent_theme_colors() {
 #[test]
 #[serial]
 fn test_selector_updates_when_parent_theme_changes() {
+    let root = TestRoot::new();
     let theme_signal = RwSignal::new(TestTheme {
         primary_bg: palette::css::RED,
         secondary_bg: palette::css::GREEN,
@@ -605,16 +652,16 @@ fn test_selector_updates_when_parent_theme_changes() {
 
     let child = Empty::new().style(|s| {
         s.size(50.0, 50.0).with_test_theme(|s, theme| {
-            s.background(theme.secondary_bg)
-                .hover(|s| s.background(theme.primary_bg))
+            s.background(theme.secondary_bg())
+                .hover(|s| s.background(theme.primary_bg()))
         })
     });
     let child_id = child.view_id();
 
-    let root = Container::new(child)
+    let root_view = Container::new(child)
         .style(move |s| s.size(100.0, 100.0).set(TestThemeProp, theme_signal.get()));
 
-    let mut harness = HeadlessHarness::new_with_size(root, 100.0, 100.0);
+    let mut harness = HeadlessHarness::new_with_size(root, root_view, 100.0, 100.0);
 
     // Hover to activate hover style
     harness.pointer_move(25.0, 25.0);
@@ -649,6 +696,7 @@ fn test_selector_updates_when_parent_theme_changes() {
 #[test]
 #[serial]
 fn test_nested_selectors_with_parent_theme_colors() {
+    let root = TestRoot::new();
     let custom_theme = TestTheme {
         primary_bg: palette::css::RED,
         secondary_bg: palette::css::GREEN,
@@ -656,21 +704,21 @@ fn test_nested_selectors_with_parent_theme_colors() {
         secondary_color: palette::css::YELLOW,
     };
 
-    let child = Empty::new().style(|s| s.focusable(true)).style(|s| {
+    let child = Empty::new().style(|s| s.keyboard_navigable()).style(|s| {
         s.size(50.0, 50.0).with_test_theme(|s, theme| {
-            s.background(theme.secondary_bg) // GREEN
+            s.background(theme.secondary_bg()) // GREEN
                 .hover(|s| {
-                    s.background(theme.primary_bg) // RED on hover
-                        .focus_visible(|s| s.background(theme.primary_color)) // BLUE when focused while hovering
+                    s.background(theme.primary_bg()) // RED on hover
+                        .focus_visible(|s| s.background(theme.primary_color())) // BLUE when focused while hovering
                 })
         })
     });
     let child_id = child.view_id();
 
-    let root =
+    let root_view =
         Container::new(child).style(move |s| s.size(100.0, 100.0).set(TestThemeProp, custom_theme));
 
-    let mut harness = HeadlessHarness::new_with_size(root, 100.0, 100.0);
+    let mut harness = HeadlessHarness::new_with_size(root, root_view, 100.0, 100.0);
 
     // Initial: GREEN
     let style = harness.get_computed_style(child_id);
@@ -694,6 +742,7 @@ fn test_nested_selectors_with_parent_theme_colors() {
 #[test]
 #[serial]
 fn test_selector_with_conditional_theme_and_signal() {
+    let root = TestRoot::new();
     let is_active = RwSignal::new(false);
 
     let custom_theme = TestTheme {
@@ -706,20 +755,20 @@ fn test_selector_with_conditional_theme_and_signal() {
     let child = Empty::new().style(move |s| {
         s.size(50.0, 50.0).with_test_theme(move |s, theme| {
             let base = if is_active.get() {
-                s.background(theme.primary_bg) // RED when active
+                s.background(theme.primary_bg()) // RED when active
             } else {
-                s.background(theme.secondary_bg) // GREEN when inactive
+                s.background(theme.secondary_bg()) // GREEN when inactive
             };
             // Hover always uses primary_color (BLUE)
-            base.hover(|s| s.background(theme.primary_color))
+            base.hover(|s| s.background(theme.primary_color()))
         })
     });
     let child_id = child.view_id();
 
-    let root =
+    let root_view =
         Container::new(child).style(move |s| s.size(100.0, 100.0).set(TestThemeProp, custom_theme));
 
-    let mut harness = HeadlessHarness::new_with_size(root, 100.0, 100.0);
+    let mut harness = HeadlessHarness::new_with_size(root, root_view, 100.0, 100.0);
 
     // Initial (inactive): GREEN
     let style = harness.get_computed_style(child_id);
@@ -765,6 +814,7 @@ fn test_selector_with_conditional_theme_and_signal() {
 #[test]
 #[serial]
 fn test_deep_nesting_with_theme_selectors() {
+    let root = TestRoot::new();
     let custom_theme = TestTheme {
         primary_bg: palette::css::RED,
         secondary_bg: palette::css::GREEN,
@@ -775,8 +825,8 @@ fn test_deep_nesting_with_theme_selectors() {
     // Create a deep hierarchy where the leaf uses theme in hover
     let leaf = Empty::new().style(|s| {
         s.size(20.0, 20.0).with_test_theme(|s, theme| {
-            s.background(theme.secondary_bg)
-                .hover(|s| s.background(theme.primary_bg))
+            s.background(theme.secondary_bg())
+                .hover(|s| s.background(theme.primary_bg()))
         })
     });
     let leaf_id = leaf.view_id();
@@ -786,10 +836,10 @@ fn test_deep_nesting_with_theme_selectors() {
     let level1 = Container::new(level2).style(|s| s.size(80.0, 80.0));
 
     // Theme is set at root, 4 levels above the leaf
-    let root = Container::new(level1)
+    let root_view = Container::new(level1)
         .style(move |s| s.size(100.0, 100.0).set(TestThemeProp, custom_theme));
 
-    let mut harness = HeadlessHarness::new_with_size(root, 100.0, 100.0);
+    let mut harness = HeadlessHarness::new_with_size(root, root_view, 100.0, 100.0);
 
     // Initial: GREEN from parent theme (inherited through 4 levels)
     let style = harness.get_computed_style(leaf_id);
@@ -813,6 +863,7 @@ fn test_deep_nesting_with_theme_selectors() {
 #[test]
 #[serial]
 fn test_siblings_with_theme_selectors() {
+    let test_root = TestRoot::new();
     let custom_theme = TestTheme {
         primary_bg: palette::css::RED,
         secondary_bg: palette::css::GREEN,
@@ -822,16 +873,16 @@ fn test_siblings_with_theme_selectors() {
 
     let child1 = Empty::new().style(|s| {
         s.size(40.0, 40.0).with_test_theme(|s, theme| {
-            s.background(theme.secondary_bg) // GREEN
-                .hover(|s| s.background(theme.primary_bg)) // RED
+            s.background(theme.secondary_bg()) // GREEN
+                .hover(|s| s.background(theme.primary_bg())) // RED
         })
     });
     let child1_id = child1.view_id();
 
     let child2 = Empty::new().style(|s| {
         s.size(40.0, 40.0).with_test_theme(|s, theme| {
-            s.background(theme.secondary_color) // YELLOW
-                .hover(|s| s.background(theme.primary_color)) // BLUE
+            s.background(theme.secondary_color()) // YELLOW
+                .hover(|s| s.background(theme.primary_color())) // BLUE
         })
     });
     let child2_id = child2.view_id();
@@ -842,7 +893,7 @@ fn test_siblings_with_theme_selectors() {
             .set(TestThemeProp, custom_theme)
     });
 
-    let mut harness = HeadlessHarness::new_with_size(container, 100.0, 100.0);
+    let mut harness = HeadlessHarness::new_with_size(test_root, container, 100.0, 100.0);
 
     // Initial: child1=GREEN, child2=YELLOW
     let style1 = harness.get_computed_style(child1_id);

@@ -1,19 +1,18 @@
 use std::collections::HashMap;
 use std::mem;
 use std::num::NonZero;
-use std::sync::mpsc::sync_channel;
 use std::sync::Arc;
+use std::sync::mpsc::sync_channel;
 
 use anyhow::Result;
 use floem_renderer::gpu_resources::GpuResources;
-use floem_renderer::text::fontdb::ID;
-use floem_renderer::text::{LayoutGlyph, LayoutRun, FONT_SYSTEM};
+use floem_renderer::text::{Glyph, GlyphRunProps};
 use floem_renderer::{Img, Renderer};
 use peniko::kurbo::Size;
 use peniko::{
+    Blob, BrushRef,
     color::palette,
     kurbo::{Affine, Point, Rect, Shape},
-    Blob, BrushRef, Color,
 };
 use peniko::{Compose, Fill, ImageAlphaType, ImageData, Mix};
 use vello::kurbo::Stroke;
@@ -34,18 +33,29 @@ pub struct VelloRenderer {
     window_scale: f64,
     transform: Affine,
     capture: bool,
-    font_cache: HashMap<ID, vello::peniko::FontData>,
     adapter: Adapter,
+    // TODO: Apply once vello's DrawGlyphs gains embolden support.
+    #[allow(dead_code)]
+    font_embolden: f32,
+    /// Cached vello scenes keyed by SVG content hash.
+    /// The bool tracks the current generation for eviction.
+    svg_cache: HashMap<Vec<u8>, (bool, Scene)>,
+    /// Current cache generation; toggled each frame so stale entries are evicted.
+    cache_generation: bool,
 }
 
 impl VelloRenderer {
+    fn device_transform(&self) -> Affine {
+        self.transform
+    }
+
     pub fn new(
         gpu_resources: GpuResources,
         surface: wgpu::Surface<'static>,
         width: u32,
         height: u32,
         scale: f64,
-        _font_embolden: f32,
+        font_embolden: f32,
     ) -> Result<Self> {
         let GpuResources {
             adapter,
@@ -78,6 +88,11 @@ impl VelloRenderer {
             .find(|it| matches!(it, TextureFormat::Rgba8Unorm | TextureFormat::Bgra8Unorm))
             .ok_or_else(|| anyhow::anyhow!("surface should support Rgba8Unorm or Bgra8Unorm"))?;
 
+        let latency = match adapter.get_info().backend {
+            wgpu::Backend::Vulkan => 2,
+            _ => 1,
+        };
+
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: texture_format,
@@ -86,7 +101,7 @@ impl VelloRenderer {
             present_mode: wgpu::PresentMode::AutoVsync,
             alpha_mode: wgpu::CompositeAlphaMode::Auto,
             view_formats: vec![],
-            desired_maximum_frame_latency: 1,
+            desired_maximum_frame_latency: latency,
         };
 
         surface.configure(&device, &config);
@@ -140,8 +155,10 @@ impl VelloRenderer {
             window_scale: scale,
             transform: Affine::IDENTITY,
             capture: false,
-            font_cache: HashMap::new(),
             adapter,
+            font_embolden,
+            svg_cache: HashMap::new(),
+            cache_generation: false,
         })
     }
 
@@ -177,10 +194,6 @@ impl VelloRenderer {
         self.window_scale = scale;
     }
 
-    pub const fn scale(&self) -> f64 {
-        self.window_scale
-    }
-
     pub const fn size(&self) -> Size {
         Size::new(
             self.surface.config.width as f64,
@@ -205,6 +218,11 @@ impl Renderer for VelloRenderer {
             mem::swap(&mut self.scene, self.alt_scene.as_mut().unwrap());
         }
         self.transform = Affine::IDENTITY;
+
+        // Evict SVG scenes not used in the previous frame, then flip generation.
+        let generation = self.cache_generation;
+        self.svg_cache.retain(|_, (g, _)| *g == generation);
+        self.cache_generation = !generation;
     }
 
     fn stroke<'b, 's>(
@@ -213,53 +231,48 @@ impl Renderer for VelloRenderer {
         brush: impl Into<BrushRef<'b>>,
         stroke: &'s Stroke,
     ) {
-        self.scene.stroke(
-            stroke,
-            self.transform.then_scale(self.window_scale),
-            brush,
-            None,
-            shape,
-        );
+        self.scene
+            .stroke(stroke, self.device_transform(), brush, None, shape);
     }
 
     fn fill<'b>(&mut self, path: &impl Shape, brush: impl Into<BrushRef<'b>>, blur_radius: f64) {
         let brush: BrushRef<'b> = brush.into();
 
         // For solid colors with specific shapes, use optimized methods
-        if blur_radius > 0.0 {
-            if let BrushRef::Solid(color) = brush {
-                if let Some(rounded) = path.as_rounded_rect() {
-                    if rounded.radii().top_left == rounded.radii().top_right
-                        && rounded.radii().top_left == rounded.radii().bottom_left
-                        && rounded.radii().top_left == rounded.radii().bottom_right
-                    {
-                        let rect_radius = rounded.radii().top_left;
-                        let rect = rounded.rect();
-                        self.scene.draw_blurred_rounded_rect(
-                            self.transform.then_scale(self.window_scale),
-                            rect,
-                            color,
-                            rect_radius,
-                            blur_radius,
-                        );
-                        return;
-                    }
-                } else if let Some(rect) = path.as_rect() {
+        if blur_radius > 0.0
+            && let BrushRef::Solid(color) = brush
+        {
+            if let Some(rounded) = path.as_rounded_rect() {
+                if rounded.radii().top_left == rounded.radii().top_right
+                    && rounded.radii().top_left == rounded.radii().bottom_left
+                    && rounded.radii().top_left == rounded.radii().bottom_right
+                {
+                    let rect_radius = rounded.radii().top_left;
+                    let rect = rounded.rect();
                     self.scene.draw_blurred_rounded_rect(
-                        self.transform.then_scale(self.window_scale),
+                        self.device_transform(),
                         rect,
                         color,
-                        0.,
+                        rect_radius,
                         blur_radius,
                     );
                     return;
                 }
+            } else if let Some(rect) = path.as_rect() {
+                self.scene.draw_blurred_rounded_rect(
+                    self.device_transform(),
+                    rect,
+                    color,
+                    0.,
+                    blur_radius,
+                );
+                return;
             }
         }
 
         self.scene.fill(
             vello::peniko::Fill::NonZero,
-            self.transform.then_scale(self.window_scale),
+            self.device_transform(),
             brush,
             None,
             path,
@@ -274,9 +287,10 @@ impl Renderer for VelloRenderer {
         clip: &impl Shape,
     ) {
         self.scene.push_layer(
+            Fill::NonZero,
             blend,
             alpha,
-            self.transform.then_scale(self.window_scale) * transform,
+            self.transform * transform,
             clip,
         );
     }
@@ -285,61 +299,33 @@ impl Renderer for VelloRenderer {
         self.scene.pop_layer();
     }
 
-    fn draw_text_with_layout<'b>(
+    fn draw_glyphs<'a>(
         &mut self,
-        layout: impl Iterator<Item = LayoutRun<'b>>,
-        pos: impl Into<Point>,
+        origin: Point,
+        props: &GlyphRunProps<'a>,
+        glyphs: impl Iterator<Item = Glyph> + 'a,
     ) {
-        let pos: Point = pos.into();
-        let transform = self
-            .transform
-            .pre_translate((pos.x, pos.y).into())
-            .then_scale(self.window_scale);
-
-        for line in layout {
-            let mut current_run: Option<GlyphRun> = None;
-
-            for glyph in line.glyphs {
-                let color = glyph.color_opt.map_or(palette::css::BLACK, |c| {
-                    Color::from_rgba8(c.r(), c.g(), c.b(), c.a())
-                });
-                let font_size = glyph.font_size;
-                let font_id = glyph.font_id;
-                let metadata = glyph.metadata;
-
-                if current_run.as_ref().is_none_or(|run| {
-                    run.color != color
-                        || run.font_size != font_size
-                        || run.font_id != font_id
-                        || run.metadata != metadata
-                }) {
-                    if let Some(run) = current_run.take() {
-                        self.draw_glyph_run(
-                            run,
-                            transform.pre_translate((0., line.line_y.into()).into()),
-                        );
-                    }
-                    current_run = Some(GlyphRun {
-                        color,
-                        font_size,
-                        font_id,
-                        metadata,
-                        glyphs: Vec::new(),
-                    });
-                }
-
-                if let Some(run) = &mut current_run {
-                    run.glyphs.push(glyph);
-                }
-            }
-
-            if let Some(run) = current_run.take() {
-                self.draw_glyph_run(
-                    run,
-                    transform.pre_translate((0., line.line_y.into()).into()),
-                );
-            }
-        }
+        // TODO: Vello 0.7's DrawGlyphs API has no embolden support.
+        // Synthetic bold from layout synthesis and `self.font_embolden` are not applied.
+        let transform =
+            self.device_transform() * Affine::translate((origin.x, origin.y)) * props.transform;
+        self.scene
+            .draw_glyphs(&props.font)
+            .brush(props.brush)
+            .brush_alpha(props.brush_alpha)
+            .hint(props.hint)
+            .transform(transform)
+            .glyph_transform(props.glyph_transform)
+            .font_size(props.font_size)
+            .normalized_coords(props.normalized_coords)
+            .draw(
+                props.style,
+                glyphs.map(|glyph| vello::Glyph {
+                    id: glyph.id,
+                    x: glyph.x,
+                    y: glyph.y,
+                }),
+            );
     }
 
     fn draw_img(&mut self, img: Img<'_>, rect: Rect) {
@@ -354,10 +340,9 @@ impl Renderer for VelloRenderer {
 
         self.scene.draw_image(
             &img.img,
-            self.transform
+            self.device_transform()
                 .pre_scale_non_uniform(scale_x, scale_y)
-                .then_translate((translate_x, translate_y).into())
-                .then_scale(self.window_scale),
+                .pre_translate((translate_x, translate_y).into()),
         );
     }
 
@@ -378,35 +363,41 @@ impl Renderer for VelloRenderer {
         let translate_x = rect.min_x();
         let translate_y = rect.min_y();
 
-        let new = brush.map_or_else(
-            || vello_svg::render_tree(svg.tree),
-            |brush| {
+        let transform = self
+            .device_transform()
+            .pre_scale_non_uniform(scale_x, scale_y)
+            .pre_translate((translate_x, translate_y).into());
+
+        // Look up (or create) the cached base scene for this SVG.
+        let generation = self.cache_generation;
+        let base = self
+            .svg_cache
+            .entry(svg.hash.to_owned())
+            .and_modify(|(g, _)| *g = generation)
+            .or_insert_with(|| (generation, vello_svg::render_tree(svg.tree)));
+
+        // When a brush is applied (tinted icons), composite through an alpha mask.
+        // The base scene is cached; only the masking composite is rebuilt per frame.
+        let composited;
+        let scene_to_append = match brush {
+            Some(brush) => {
                 let brush = brush.into();
                 let size = Size::new(svg_size.width() as _, svg_size.height() as _);
                 let fill_rect = Rect::from_origin_size(Point::ZERO, size);
-
-                alpha_mask_scene(
+                let base_scene = &base.1;
+                composited = alpha_mask_scene(
                     size,
-                    |scene| {
-                        scene.append(&vello_svg::render_tree(svg.tree), None);
-                    },
+                    |scene| scene.append(base_scene, None),
                     move |scene| {
                         scene.fill(Fill::NonZero, Affine::IDENTITY, brush, None, &fill_rect);
                     },
-                )
-            },
-        );
+                );
+                &composited
+            }
+            None => &base.1,
+        };
 
-        // Apply transformations to fit the SVG within the provided rectangle
-        self.scene.append(
-            &new,
-            Some(
-                self.transform
-                    .pre_scale_non_uniform(scale_x, scale_y)
-                    .pre_translate((translate_x, translate_y).into())
-                    .then_scale(self.window_scale),
-            ),
-        );
+        self.scene.append(scene_to_append, Some(transform));
     }
 
     fn set_transform(&mut self, transform: Affine) {
@@ -436,41 +427,49 @@ impl Renderer for VelloRenderer {
         if self.capture {
             self.render_capture_image()
         } else {
-            if let Ok(surface_texture) = self.surface.surface.get_current_texture() {
-                self.renderer
-                    .render_to_texture(
-                        &self.device,
-                        &self.queue,
-                        &self.scene,
-                        &self.surface.target_view,
-                        &vello::RenderParams {
-                            base_color: palette::css::TRANSPARENT, // Background color
-                            width: self.surface.config.width,
-                            height: self.surface.config.height,
-                            antialiasing_method: vello::AaConfig::Msaa16,
-                        },
-                    )
-                    .unwrap();
-
-                // Perform the copy
-                let mut encoder =
-                    self.device
-                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                            label: Some("Surface Blit"),
-                        });
-
-                self.surface.blitter.copy(
+            let surface_texture = match self.surface.surface.get_current_texture() {
+                Ok(surface_texture) => surface_texture,
+                Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                    self.surface
+                        .surface
+                        .configure(&self.device, &self.surface.config);
+                    return None;
+                }
+                _ => return None,
+            };
+            self.renderer
+                .render_to_texture(
                     &self.device,
-                    &mut encoder,
+                    &self.queue,
+                    &self.scene,
                     &self.surface.target_view,
-                    &surface_texture
-                        .texture
-                        .create_view(&wgpu::TextureViewDescriptor::default()),
-                );
-                self.queue.submit([encoder.finish()]);
-                // Queue the texture to be presented on the surface
-                surface_texture.present();
-            }
+                    &vello::RenderParams {
+                        base_color: palette::css::TRANSPARENT, // Background color
+                        width: self.surface.config.width,
+                        height: self.surface.config.height,
+                        antialiasing_method: vello::AaConfig::Msaa16,
+                    },
+                )
+                .unwrap();
+
+            // Perform the copy
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Surface Blit"),
+                });
+            self.surface.blitter.copy(
+                &self.device,
+                &mut encoder,
+                &self.surface.target_view,
+                &surface_texture
+                    .texture
+                    .create_view(&wgpu::TextureViewDescriptor::default()),
+            );
+            self.queue.submit([encoder.finish()]);
+
+            // Queue the texture to be presented on the surface
+            surface_texture.present();
             None
         }
     }
@@ -527,9 +526,9 @@ impl VelloRenderer {
                 &self.scene,
                 &view,
                 &vello::RenderParams {
-                    base_color: palette::css::BLACK, // Background color
-                    width: self.surface.config.width * self.window_scale as u32,
-                    height: self.surface.config.height * self.window_scale as u32,
+                    base_color: palette::css::TRANSPARENT,
+                    width: self.surface.config.width,
+                    height: self.surface.config.height,
                     antialiasing_method: AaConfig::Area,
                 },
             )
@@ -562,30 +561,20 @@ impl VelloRenderer {
         );
         let command_buffer = encoder.finish();
         self.queue.submit(Some(command_buffer));
-        self.device.poll(wgpu::PollType::Wait).ok()?;
+        self.device.poll(wgpu::PollType::wait_indefinitely()).ok()?;
 
         let slice = buffer.slice(..);
         let (tx, rx) = sync_channel(1);
         slice.map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
 
-        loop {
-            if let Ok(r) = rx.try_recv() {
-                break r.ok()?;
-            }
-            if matches!(
-                self.device.poll(wgpu::PollType::Wait).ok()?,
-                wgpu::PollStatus::WaitSucceeded
-            ) {
-                rx.recv().ok()?.ok()?;
-                break;
-            }
-        }
+        self.device.poll(wgpu::PollType::wait_indefinitely()).ok()?;
+        rx.recv().ok()?.ok()?;
 
-        let mut cropped_buffer = Vec::new();
         let buffer: Vec<u8> = slice.get_mapped_range().to_owned();
 
-        let mut cursor = 0;
         let row_size = self.surface.config.width as usize * bytes_per_pixel as usize;
+        let mut cropped_buffer = Vec::with_capacity(row_size * height as usize);
+        let mut cursor = 0;
         for _ in 0..height {
             cropped_buffer.extend_from_slice(&buffer[cursor..(cursor + row_size)]);
             cursor += bytes_per_row as usize;
@@ -609,6 +598,7 @@ fn common_alpha_mask_scene(
 ) -> Scene {
     let mut scene = Scene::new();
     scene.push_layer(
+        Fill::NonZero,
         Mix::Normal,
         1.0,
         Affine::IDENTITY,
@@ -618,6 +608,7 @@ fn common_alpha_mask_scene(
     alpha_mask(&mut scene);
 
     scene.push_layer(
+        Fill::NonZero,
         vello::peniko::BlendMode {
             mix: Mix::Normal,
             compose: compose_mode,
@@ -648,47 +639,4 @@ fn invert_alpha_mask_scene(
     item: impl FnOnce(&mut Scene),
 ) -> Scene {
     common_alpha_mask_scene(size, alpha_mask, item, Compose::SrcOut)
-}
-
-struct GlyphRun<'a> {
-    color: Color,
-    font_size: f32,
-    font_id: ID,
-    metadata: usize,
-    glyphs: Vec<&'a LayoutGlyph>,
-}
-
-impl VelloRenderer {
-    fn get_font(&mut self, font_id: ID) -> vello::peniko::FontData {
-        self.font_cache.get(&font_id).cloned().unwrap_or_else(|| {
-            let mut font_system = FONT_SYSTEM.lock();
-            let font = font_system.get_font(font_id).unwrap();
-            let face = font_system.db().face(font_id).unwrap();
-            let font_data = font.data();
-            let font_index = face.index;
-            drop(font_system);
-            let font =
-                vello::peniko::FontData::new(Blob::new(Arc::new(font_data.to_vec())), font_index);
-            self.font_cache.insert(font_id, font.clone());
-            font
-        })
-    }
-
-    fn draw_glyph_run(&mut self, run: GlyphRun, transform: Affine) {
-        let font = self.get_font(run.font_id);
-        self.scene
-            .draw_glyphs(&font)
-            .font_size(run.font_size)
-            .brush(run.color)
-            .hint(false)
-            .transform(transform)
-            .draw(
-                Fill::NonZero,
-                run.glyphs.into_iter().map(|glyph| vello::Glyph {
-                    id: glyph.glyph_id.into(),
-                    x: glyph.x,
-                    y: glyph.y,
-                }),
-            );
-    }
 }

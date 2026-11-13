@@ -26,14 +26,14 @@ prop!(
 
 // Helper to use inherited color in styles.
 trait CacheColorExt {
-    fn with_cache_color(self, f: impl Fn(Self, &Color) -> Self + 'static) -> Self
+    fn with_cache_color(self) -> Self
     where
         Self: Sized;
 }
 
 impl CacheColorExt for Style {
-    fn with_cache_color(self, f: impl Fn(Self, &Color) -> Self + 'static) -> Self {
-        self.with_context::<CacheTestColor>(f)
+    fn with_cache_color(self) -> Self {
+        self.with::<CacheTestColor>(|s, color| s.background(color.def(|color| color)))
     }
 }
 
@@ -48,6 +48,7 @@ floem::style_class!(pub CacheTestClass);
 #[test]
 #[serial]
 fn test_cache_hit_for_identical_styles() {
+    let root = TestRoot::new();
     // Create multiple views with exactly the same style
     let views: Vec<_> = (0..5)
         .map(|_| {
@@ -62,7 +63,7 @@ fn test_cache_hit_for_identical_styles() {
     let ids: Vec<_> = views.iter().map(|v| v.view_id()).collect();
     let container = Stack::from_iter(views).style(|s| s.size(300.0, 300.0));
 
-    let harness = HeadlessHarness::new_with_size(container, 300.0, 300.0);
+    let harness = HeadlessHarness::new_with_size(root, container, 300.0, 300.0);
 
     // All views should have identical computed styles
     let first_style = harness.get_computed_style(ids[0]);
@@ -82,6 +83,7 @@ fn test_cache_hit_for_identical_styles() {
 #[test]
 #[serial]
 fn test_cache_miss_for_different_styles() {
+    let root = TestRoot::new();
     let view1 = Empty::new().style(|s| s.size(50.0, 50.0).background(palette::css::RED));
     let id1 = view1.view_id();
 
@@ -89,7 +91,7 @@ fn test_cache_miss_for_different_styles() {
     let id2 = view2.view_id();
 
     let container = Stack::new((view1, view2)).style(|s| s.size(200.0, 100.0));
-    let harness = HeadlessHarness::new_with_size(container, 200.0, 100.0);
+    let harness = HeadlessHarness::new_with_size(root, container, 200.0, 100.0);
 
     let style1 = harness.get_computed_style(id1);
     let style2 = harness.get_computed_style(id2);
@@ -117,13 +119,12 @@ fn test_cache_miss_for_different_styles() {
 #[test]
 #[serial]
 fn test_cache_miss_for_different_parent_inherited() {
+    let root = TestRoot::new();
     // Two parent containers with different inherited colors
-    let child1 =
-        Empty::new().style(|s| s.size(30.0, 30.0).with_cache_color(|s, c| s.background(*c)));
+    let child1 = Empty::new().style(|s| s.size(30.0, 30.0).with_cache_color());
     let child1_id = child1.view_id();
 
-    let child2 =
-        Empty::new().style(|s| s.size(30.0, 30.0).with_cache_color(|s, c| s.background(*c)));
+    let child2 = Empty::new().style(|s| s.size(30.0, 30.0).with_cache_color());
     let child2_id = child2.view_id();
 
     let parent1 =
@@ -132,8 +133,8 @@ fn test_cache_miss_for_different_parent_inherited() {
     let parent2 = Container::new(child2)
         .style(|s| s.size(50.0, 50.0).set(CacheTestColor, palette::css::GREEN));
 
-    let root = Stack::new((parent1, parent2)).style(|s| s.size(200.0, 100.0));
-    let harness = HeadlessHarness::new_with_size(root, 200.0, 100.0);
+    let view = Stack::new((parent1, parent2)).style(|s| s.size(200.0, 100.0));
+    let harness = HeadlessHarness::new_with_size(root, view, 200.0, 100.0);
 
     // Children should have different backgrounds due to different parent inherited values
     let style1 = harness.get_computed_style(child1_id);
@@ -158,16 +159,16 @@ fn test_cache_miss_for_different_parent_inherited() {
 #[test]
 #[serial]
 fn test_cache_invalidation_on_inherited_change() {
+    let root = TestRoot::new();
     let color_signal = RwSignal::new(palette::css::RED);
 
-    let child =
-        Empty::new().style(|s| s.size(50.0, 50.0).with_cache_color(|s, c| s.background(*c)));
+    let child = Empty::new().style(|s| s.size(50.0, 50.0).with_cache_color());
     let child_id = child.view_id();
 
     let parent = Container::new(child)
         .style(move |s| s.size(100.0, 100.0).set(CacheTestColor, color_signal.get()));
 
-    let mut harness = HeadlessHarness::new_with_size(parent, 100.0, 100.0);
+    let mut harness = HeadlessHarness::new_with_size(root, parent, 100.0, 100.0);
 
     // Initial: child should be RED
     let style = harness.get_computed_style(child_id);
@@ -199,6 +200,7 @@ fn test_cache_invalidation_on_inherited_change() {
 #[test]
 #[serial]
 fn test_cache_with_hover_state() {
+    let root = TestRoot::new();
     let view = Empty::new().style(|s| {
         s.size(100.0, 100.0)
             .background(palette::css::GRAY)
@@ -206,7 +208,7 @@ fn test_cache_with_hover_state() {
     });
     let id = view.view_id();
 
-    let mut harness = HeadlessHarness::new_with_size(view, 100.0, 100.0);
+    let mut harness = HeadlessHarness::new_with_size(root, view, 100.0, 100.0);
 
     // Initial: should be GRAY
     let style = harness.get_computed_style(id);
@@ -239,6 +241,7 @@ fn test_cache_with_hover_state() {
 #[test]
 #[serial]
 fn test_cache_with_disabled_state() {
+    let root = TestRoot::new();
     let disabled_signal = RwSignal::new(false);
 
     let view = Empty::new().style(|s| {
@@ -251,7 +254,7 @@ fn test_cache_with_disabled_state() {
     let container = Container::new(view)
         .style(move |s| s.size(150.0, 150.0).set_disabled(disabled_signal.get()));
 
-    let mut harness = HeadlessHarness::new_with_size(container, 150.0, 150.0);
+    let mut harness = HeadlessHarness::new_with_size(root, container, 150.0, 150.0);
 
     // Initial: should be GREEN
     let style = harness.get_computed_style(view_id);
@@ -293,12 +296,13 @@ fn test_cache_with_disabled_state() {
 #[test]
 #[serial]
 fn test_cache_with_dynamic_style_changes() {
+    let root = TestRoot::new();
     let color_signal = RwSignal::new(palette::css::RED);
 
     let view = Empty::new().style(move |s| s.size(100.0, 100.0).background(color_signal.get()));
     let id = view.view_id();
 
-    let mut harness = HeadlessHarness::new_with_size(view, 100.0, 100.0);
+    let mut harness = HeadlessHarness::new_with_size(root, view, 100.0, 100.0);
 
     // Initial
     let style = harness.get_computed_style(id);
@@ -336,6 +340,7 @@ fn test_cache_with_dynamic_style_changes() {
 #[test]
 #[serial]
 fn test_cache_with_class_application() {
+    let root = TestRoot::new();
     // First test: child with NO inline background receives class styling
     let child1 = Empty::new()
         .class(CacheTestClass)
@@ -347,7 +352,7 @@ fn test_cache_with_class_application() {
             .class(CacheTestClass, |s| s.background(palette::css::PURPLE))
     });
 
-    let harness1 = HeadlessHarness::new_with_size(parent1, 100.0, 100.0);
+    let harness1 = HeadlessHarness::new_with_size(root, parent1, 100.0, 100.0);
 
     let style = harness1.get_computed_style(child1_id);
     let bg = style.get(Background);
@@ -358,6 +363,7 @@ fn test_cache_with_class_application() {
     );
 
     // Second test: child WITH inline background - inline wins over class
+    let root2 = TestRoot::new();
     let child2 = Empty::new()
         .class(CacheTestClass)
         .style(|s| s.size(50.0, 50.0).background(palette::css::GRAY));
@@ -368,7 +374,7 @@ fn test_cache_with_class_application() {
             .class(CacheTestClass, |s| s.background(palette::css::PURPLE))
     });
 
-    let harness2 = HeadlessHarness::new_with_size(parent2, 100.0, 100.0);
+    let harness2 = HeadlessHarness::new_with_size(root2, parent2, 100.0, 100.0);
 
     let style = harness2.get_computed_style(child2_id);
     let bg = style.get(Background);
@@ -387,6 +393,7 @@ fn test_cache_with_class_application() {
 #[test]
 #[serial]
 fn test_cache_with_many_identical_views() {
+    let root = TestRoot::new();
     let views: Vec<_> = (0..100)
         .map(|_| {
             Empty::new().style(|s| {
@@ -400,7 +407,7 @@ fn test_cache_with_many_identical_views() {
     let ids: Vec<_> = views.iter().map(|v| v.view_id()).collect();
     let container = Stack::from_iter(views).style(|s| s.size(1000.0, 1000.0));
 
-    let harness = HeadlessHarness::new_with_size(container, 1000.0, 1000.0);
+    let harness = HeadlessHarness::new_with_size(root, container, 1000.0, 1000.0);
 
     // All views should have the same computed style
     let expected_bg = harness.get_computed_style(ids[0]).get(Background);
@@ -419,6 +426,7 @@ fn test_cache_with_many_identical_views() {
 #[test]
 #[serial]
 fn test_cache_with_deep_nesting() {
+    let root = TestRoot::new();
     fn create_nested(depth: usize) -> Container {
         if depth == 0 {
             Container::new(
@@ -431,7 +439,7 @@ fn test_cache_with_deep_nesting() {
     }
 
     let view = create_nested(15);
-    let harness = HeadlessHarness::new_with_size(view, 100.0, 100.0);
+    let harness = HeadlessHarness::new_with_size(root, view, 100.0, 100.0);
 
     // Should not panic, style should be computed correctly
     let root_id = harness.root_id();
@@ -446,13 +454,14 @@ fn test_cache_with_deep_nesting() {
 #[test]
 #[serial]
 fn test_cache_combined_inherited_and_local() {
+    let root = TestRoot::new();
     let inherited_color = RwSignal::new(palette::css::RED);
     let local_padding = RwSignal::new(5.0);
 
     let child = Empty::new().style(move |s| {
         s.size(50.0, 50.0)
             .padding(local_padding.get())
-            .with_cache_color(|s, c| s.background(*c))
+            .with_cache_color()
     });
     let child_id = child.view_id();
 
@@ -461,7 +470,7 @@ fn test_cache_combined_inherited_and_local() {
             .set(CacheTestColor, inherited_color.get())
     });
 
-    let mut harness = HeadlessHarness::new_with_size(parent, 100.0, 100.0);
+    let mut harness = HeadlessHarness::new_with_size(root, parent, 100.0, 100.0);
 
     // Initial
     let style = harness.get_computed_style(child_id);
@@ -492,12 +501,13 @@ fn test_cache_combined_inherited_and_local() {
 #[test]
 #[serial]
 fn test_cache_rapid_updates() {
+    let root = TestRoot::new();
     let color_signal = RwSignal::new(palette::css::RED);
 
     let view = Empty::new().style(move |s| s.size(100.0, 100.0).background(color_signal.get()));
     let id = view.view_id();
 
-    let mut harness = HeadlessHarness::new_with_size(view, 100.0, 100.0);
+    let mut harness = HeadlessHarness::new_with_size(root, view, 100.0, 100.0);
 
     // Rapid updates
     for _ in 0..10 {
@@ -513,4 +523,163 @@ fn test_cache_rapid_updates() {
             );
         }
     }
+}
+
+// ============================================================================
+// Structural Selector Tests (cache exclusion)
+// ============================================================================
+
+/// Test that structural selectors (:first-child, :last-child) produce correct
+/// per-position styles. These styles are excluded from the cache because they
+/// depend on child_index/sibling_count which aren't in the cache key.
+#[test]
+#[serial]
+fn test_cache_with_structural_selectors() {
+    let root = TestRoot::new();
+
+    let views: Vec<_> = (0..5)
+        .map(|_| {
+            Empty::new().style(|s| {
+                s.size(50.0, 50.0)
+                    .background(palette::css::GRAY)
+                    .first_child(|s| s.background(palette::css::RED))
+                    .last_child(|s| s.background(palette::css::BLUE))
+            })
+        })
+        .collect();
+
+    let ids: Vec<_> = views.iter().map(|v| v.view_id()).collect();
+    let container = Stack::from_iter(views).style(|s| s.size(300.0, 300.0));
+    let harness = HeadlessHarness::new_with_size(root, container, 300.0, 300.0);
+
+    // First child should be RED
+    let bg_first = harness.get_computed_style(ids[0]).get(Background);
+    assert!(
+        matches!(bg_first, Some(Brush::Solid(c)) if c == palette::css::RED),
+        "First child should be RED, got {:?}",
+        bg_first
+    );
+
+    // Last child should be BLUE
+    let bg_last = harness.get_computed_style(ids[4]).get(Background);
+    assert!(
+        matches!(bg_last, Some(Brush::Solid(c)) if c == palette::css::BLUE),
+        "Last child should be BLUE, got {:?}",
+        bg_last
+    );
+
+    // Middle children should be GRAY
+    for &id in &ids[1..4] {
+        let bg = harness.get_computed_style(id).get(Background);
+        assert!(
+            matches!(bg, Some(Brush::Solid(c)) if c == palette::css::GRAY),
+            "Middle child should be GRAY, got {:?}",
+            bg
+        );
+    }
+}
+
+// ============================================================================
+// Selected State Tests
+// ============================================================================
+
+/// Test that selected state changes correctly affect styles.
+#[test]
+#[serial]
+fn test_cache_with_selected_state() {
+    let root = TestRoot::new();
+    let selected_signal = RwSignal::new(false);
+
+    let view = Empty::new().style(|s| {
+        s.size(100.0, 100.0)
+            .background(palette::css::WHITE)
+            .selected(|s| s.background(palette::css::GOLD))
+    });
+    let view_id = view.view_id();
+
+    let container = Container::new(view)
+        .style(move |s| s.size(150.0, 150.0).set_selected(selected_signal.get()));
+
+    let mut harness = HeadlessHarness::new_with_size(root, container, 150.0, 150.0);
+
+    // Initial: should be WHITE
+    let style = harness.get_computed_style(view_id);
+    let bg = style.get(Background);
+    assert!(
+        matches!(bg, Some(Brush::Solid(c)) if c == palette::css::WHITE),
+        "Initial should be WHITE, got {:?}",
+        bg
+    );
+
+    // Select
+    selected_signal.set(true);
+    harness.rebuild();
+
+    let style = harness.get_computed_style(view_id);
+    let bg = style.get(Background);
+    assert!(
+        matches!(bg, Some(Brush::Solid(c)) if c == palette::css::GOLD),
+        "Selected should be GOLD, got {:?}",
+        bg
+    );
+
+    // Deselect
+    selected_signal.set(false);
+    harness.rebuild();
+
+    let style = harness.get_computed_style(view_id);
+    let bg = style.get(Background);
+    assert!(
+        matches!(bg, Some(Brush::Solid(c)) if c == palette::css::WHITE),
+        "Deselected should be WHITE, got {:?}",
+        bg
+    );
+}
+
+// ============================================================================
+// Active State Tests
+// ============================================================================
+
+/// Test that active state (pointer down) correctly affects styles.
+#[test]
+#[serial]
+fn test_cache_with_active_state() {
+    let root = TestRoot::new();
+    let view = Empty::new().style(|s| {
+        s.size(100.0, 100.0)
+            .background(palette::css::GRAY)
+            .active(|s| s.background(palette::css::ORANGE))
+    });
+    let id = view.view_id();
+
+    let mut harness = HeadlessHarness::new_with_size(root, view, 100.0, 100.0);
+
+    // Initial: should be GRAY
+    let style = harness.get_computed_style(id);
+    let bg = style.get(Background);
+    assert!(
+        matches!(bg, Some(Brush::Solid(c)) if c == palette::css::GRAY),
+        "Initial should be GRAY"
+    );
+
+    // Pointer down (active)
+    harness.pointer_move(50.0, 50.0);
+    harness.pointer_down(50.0, 50.0);
+    let style = harness.get_computed_style(id);
+    let bg = style.get(Background);
+    assert!(
+        matches!(bg, Some(Brush::Solid(c)) if c == palette::css::ORANGE),
+        "Active should be ORANGE, got {:?}",
+        bg
+    );
+
+    // Pointer up (no longer active)
+    harness.pointer_up(50.0, 50.0);
+    let style = harness.get_computed_style(id);
+    let bg = style.get(Background);
+    assert!(
+        matches!(bg, Some(Brush::Solid(c)) if c == palette::css::GRAY),
+        "After pointer up should be GRAY, got {:?}",
+        bg
+    );
 }

@@ -5,8 +5,8 @@ use std::{
     collections::{HashMap, HashSet},
     rc::Rc,
     sync::{
-        atomic::{AtomicBool, Ordering},
         OnceLock,
+        atomic::{AtomicBool, Ordering},
     },
     thread::{self, ThreadId},
 };
@@ -14,7 +14,7 @@ use std::{
 use smallvec::SmallVec;
 
 use crate::{
-    effect::{run_effect, EffectPriority, EffectTrait},
+    effect::{EffectPriority, EffectTrait, run_effect},
     id::Id,
     signal::SignalState,
     sync_runtime::SYNC_RUNTIME,
@@ -24,7 +24,7 @@ use crate::{
 pub(crate) type ScopeContexts = HashMap<TypeId, Box<dyn Any>>;
 
 thread_local! {
-pub(crate) static RUNTIME: Runtime = Runtime::new();
+pub static RUNTIME: Runtime = Runtime::new();
 }
 
 static UI_THREAD_ID: OnceLock<ThreadId> = OnceLock::new();
@@ -215,5 +215,28 @@ impl Runtime {
     /// The waker should nudge the UI event loop (e.g., by sending a proxy event).
     pub fn set_sync_effect_waker(waker: impl Fn() + Send + Sync + 'static) {
         SYNC_RUNTIME.set_waker(waker);
+    }
+
+    pub fn get_current_effect() -> Option<Rc<dyn EffectTrait>> {
+        RUNTIME.with(|rt| rt.current_effect.borrow().clone())
+    }
+
+    pub fn set_current_effect(effect: Option<Rc<dyn EffectTrait>>) {
+        RUNTIME.with(|rt| *rt.current_effect.borrow_mut() = effect);
+    }
+
+    pub fn with_effect<T>(effect: Option<Rc<dyn EffectTrait>>, f: impl FnOnce() -> T) -> T {
+        struct EffectRestoreGuard(Option<Rc<dyn EffectTrait>>);
+
+        impl Drop for EffectRestoreGuard {
+            fn drop(&mut self) {
+                Runtime::set_current_effect(self.0.clone());
+            }
+        }
+
+        let saved_effect = Runtime::get_current_effect();
+        let _restore = EffectRestoreGuard(saved_effect);
+        Runtime::set_current_effect(effect);
+        f()
     }
 }

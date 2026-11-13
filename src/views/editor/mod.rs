@@ -16,7 +16,7 @@ use crate::{
     prop, prop_extractor,
     reactive::{Effect, ReadSignal, RwSignal, Scope},
     style::{CursorColor, StylePropValue, TextColor},
-    text::{Attrs, AttrsList, LineHeightValue, TextLayout, Wrap},
+    text::{Attrs, AttrsList, LineHeightValue, OverflowWrap, TextLayout, TextWrapMode},
     view::{IntoView, View},
 };
 use floem_editor_core::{
@@ -31,8 +31,8 @@ use floem_editor_core::{
     word::WordCursor,
 };
 use floem_reactive::{SignalGet, SignalTrack, SignalUpdate, SignalWith, Trigger};
-use floem_renderer::text::Affinity;
 use lapce_xi_rope::Rope;
+use parley::Affinity;
 
 pub mod actions;
 pub mod color;
@@ -97,7 +97,7 @@ impl StylePropValue for IndentStyle {
 prop!(pub DropdownShadow: Option<Color> {} = None);
 prop!(pub Foreground: Color { inherited } = Color::from_rgb8(0x38, 0x3A, 0x42));
 prop!(pub Focus: Option<Color> {} = None);
-prop!(pub SelectionColor: Color {} = palette::css::BLACK.with_alpha(0.5));
+prop!(pub SelectionColor: Brush {} = Brush::Solid(palette::css::BLACK.with_alpha(0.5)));
 prop!(pub CurrentLineColor: Option<Color> {  } = None);
 prop!(pub Link: Option<Color> {} = None);
 prop!(pub VisibleWhitespaceColor: Color {} = palette::css::TRANSPARENT);
@@ -321,6 +321,18 @@ impl Editor {
     /// Get the document untracked
     pub fn doc(&self) -> Rc<dyn Document> {
         self.doc.get_untracked()
+    }
+
+    /// Retrieves the [Document] and subscribes the current reactive scope to updates.
+    /// Returns `None` if the underlying reactive scope has been disposed.
+    pub fn try_doc(&self) -> Option<Rc<dyn Document>> {
+        self.doc.try_get()
+    }
+
+    /// Retrieves the [Document] without subscribing to reactive updates.
+    /// Returns `None` if the underlying reactive scope has been disposed.
+    pub fn try_doc_untracked(&self) -> Option<Rc<dyn Document>> {
+        self.doc.try_get_untracked()
     }
 
     pub fn doc_track(&self) -> Rc<dyn Document> {
@@ -992,11 +1004,11 @@ impl Editor {
         };
 
         let aff = match affinity {
-            CursorAffinity::Backward => Affinity::Before,
-            CursorAffinity::Forward => Affinity::After,
+            CursorAffinity::Backward => Affinity::Upstream,
+            CursorAffinity::Forward => Affinity::Downstream,
         };
 
-        text_layout.text.hit_position_aff(index, aff).point
+        text_layout.text.cursor_point(index, aff)
     }
 
     /// Get the (point above, point below) of a particular offset within the editor.
@@ -1059,8 +1071,12 @@ impl Editor {
 
         let y = text_layout.get_layout_y(rvline.line_index).unwrap_or(0.0);
 
-        let hit_point = text_layout.text.hit_point(Point::new(point.x, y as f64));
-        (line, hit_point.index)
+        let index = text_layout
+            .text
+            .hit_test(Point::new(point.x, y as f64))
+            .map(|cursor| text_layout.text.cursor_to_byte_index(&cursor))
+            .unwrap_or(0);
+        (line, index)
     }
 
     /// Get the (line, col) of a particular point within the editor.
@@ -1102,14 +1118,26 @@ impl Editor {
 
         let y = text_layout.get_layout_y(rvline.line_index).unwrap_or(0.0);
 
-        let hit_point = text_layout.text.hit_point(Point::new(point.x, y as f64));
-        let mut affinity = match hit_point.affinity {
-            Affinity::Before => CursorAffinity::Backward,
-            Affinity::After => CursorAffinity::Forward,
+        let hit_point = Point::new(point.x, y as f64);
+        let size = text_layout.text.size();
+        let is_inside = hit_point.x <= size.width && hit_point.y <= size.height;
+        let (index, affinity) = text_layout
+            .text
+            .hit_test(hit_point)
+            .map(|cursor| {
+                (
+                    text_layout.text.cursor_to_byte_index(&cursor),
+                    cursor.affinity(),
+                )
+            })
+            .unwrap_or((0, Affinity::default()));
+        let mut affinity = match affinity {
+            Affinity::Upstream => CursorAffinity::Backward,
+            Affinity::Downstream => CursorAffinity::Forward,
         };
         // We have to unapply the phantom text shifting in order to get back to the column in
         // the actual buffer
-        let col = text_layout.phantom_text.before_col(hit_point.index);
+        let col = text_layout.phantom_text.before_col(index);
         // Ensure that the column doesn't end up out of bounds, so things like clicking on the far
         // right end will just go to the end of the line.
         let max_col = self.line_end_col(line, mode != Mode::Normal);
@@ -1117,7 +1145,7 @@ impl Editor {
 
         // TODO: this is a hack to get around text layouts not including spaces at the end of
         // wrapped lines, but we want to be able to click on them
-        if !hit_point.is_inside {
+        if !is_inside {
             // TODO(minor): this is probably wrong in some manners
             col = info.last_col(&self.text_prov(), true);
         }
@@ -1134,7 +1162,7 @@ impl Editor {
             affinity = CursorAffinity::Forward;
         }
 
-        ((line, col), hit_point.is_inside, affinity)
+        ((line, col), is_inside, affinity)
     }
 
     // TODO: colposition probably has issues with wrapping?
@@ -1144,8 +1172,11 @@ impl Editor {
                 // TODO: won't this be incorrect with phantom text? Shouldn't this just use
                 // line_col_of_point and get the col from that?
                 let text_layout = self.text_layout(line);
-                let hit_point = text_layout.text.hit_point(Point::new(x, 0.0));
-                let n = hit_point.index;
+                let n = text_layout
+                    .text
+                    .hit_test(Point::new(x, 0.0))
+                    .map(|cursor| text_layout.text.cursor_to_byte_index(&cursor))
+                    .unwrap_or(0);
                 let col = text_layout.phantom_text.before_col(n);
 
                 col.min(self.line_end_col(line, caret))
@@ -1164,15 +1195,23 @@ impl Editor {
         match *horiz {
             ColPosition::Col(x) => {
                 let text_layout = self.text_layout(line);
+                let line_count = text_layout.text.visual_line_count();
                 let y_pos = text_layout
                     .text
-                    .layout_runs()
-                    .nth(line_index)
-                    .map(|run| run.line_y)
-                    .or_else(|| text_layout.text.layout_runs().last().map(|run| run.line_y))
+                    .visual_line_y(line_index)
+                    .or_else(|| {
+                        if line_count > 0 {
+                            text_layout.text.visual_line_y(line_count - 1)
+                        } else {
+                            None
+                        }
+                    })
                     .unwrap_or(0.0);
-                let hit_point = text_layout.text.hit_point(Point::new(x, y_pos as f64));
-                let n = hit_point.index;
+                let n = text_layout
+                    .text
+                    .hit_test(Point::new(x, y_pos as f64))
+                    .map(|cursor| text_layout.text.cursor_to_byte_index(&cursor))
+                    .unwrap_or(0);
                 let col = text_layout.phantom_text.before_col(n);
 
                 col.min(self.line_end_col(line, caret))
@@ -1272,15 +1311,15 @@ impl Editor {
                 '\t' => {
                     let col_left = phantom.col_after(col, true);
                     let col_right = phantom.col_after(col + 1, false);
-                    let x0 = text_layout.hit_position(col_left).point.x;
-                    let x1 = text_layout.hit_position(col_right).point.x;
+                    let x0 = text_layout.cursor_point(col_left, Affinity::Upstream).x;
+                    let x1 = text_layout.cursor_point(col_right, Affinity::Upstream).x;
                     whitespace_buffer.push(('\t', (x0, x1)));
                 }
                 ' ' => {
                     let col_left = phantom.col_after(col, true);
                     let col_right = phantom.col_after(col + 1, false);
-                    let x0 = text_layout.hit_position(col_left).point.x;
-                    let x1 = text_layout.hit_position(col_right).point.x;
+                    let x0 = text_layout.cursor_point(col_left, Affinity::Upstream).x;
+                    let x1 = text_layout.cursor_point(col_right, Affinity::Upstream).x;
                     whitespace_buffer.push((' ', (x0, x1)));
                 }
                 _ => {
@@ -1345,7 +1384,7 @@ impl TextLayoutProvider for Editor {
             .color(self.es.with(|s| s.ed_text_color()))
             .family(&family)
             .font_size(font_size as f32)
-            .line_height(LineHeightValue::Px(style.line_height(edid, line)));
+            .line_height(LineHeightValue::Pt(style.line_height(edid, line)));
         let mut attrs_list = AttrsList::new(attrs.clone());
 
         self.es.with_untracked(|es| {
@@ -1380,16 +1419,17 @@ impl TextLayoutProvider for Editor {
         text_layout.set_tab_width(style.tab_width(edid, line));
         text_layout.set_text(&line_content, attrs_list, None);
 
-        // dbg!(self.editor_style.with(|s| s.wrap_method()));
         match self.es.with(|s| s.wrap_method()) {
             WrapMethod::None => {}
             WrapMethod::EditorWidth => {
                 let width = self.viewport.get_untracked().width();
-                text_layout.set_wrap(Wrap::WordOrGlyph);
+                text_layout.set_text_wrap_mode(TextWrapMode::Wrap);
+                text_layout.set_overflow_wrap(OverflowWrap::BreakWord);
                 text_layout.set_size(width as f32, f32::MAX);
             }
             WrapMethod::WrapWidth { width } => {
-                text_layout.set_wrap(Wrap::WordOrGlyph);
+                text_layout.set_text_wrap_mode(TextWrapMode::Wrap);
+                text_layout.set_overflow_wrap(OverflowWrap::BreakWord);
                 text_layout.set_size(width, f32::MAX);
             }
             // TODO:
@@ -1419,7 +1459,7 @@ impl TextLayoutProvider for Editor {
         } else {
             let offset = text.first_non_blank_character_on_line(indent_line);
             let (_, col) = text.offset_to_line_col(offset);
-            text_layout.hit_position(col).point.x
+            text_layout.cursor_point(col, Affinity::Upstream).x
         };
 
         let mut layout_line = TextLayoutLine {

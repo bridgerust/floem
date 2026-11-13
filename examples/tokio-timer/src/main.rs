@@ -1,14 +1,15 @@
 use std::time::Duration;
 
-use floem::action::inspect;
-use floem::prelude::*;
-use floem::reactive::{DerivedRwSignal, Memo};
-use floem::receiver_signal::StreamSignal;
-use floem::theme::StyleThemeExt;
-use floem::unit::Pct;
-use floem::views::slider::SliderCustomStyle;
-use tokio::runtime::Runtime;
-use tokio::time::Instant;
+use floem::{
+    action::inspect,
+    prelude::*,
+    reactive::{DerivedRwSignal, Memo},
+    receiver_signal::StreamSignal,
+    theme::StyleThemeExt,
+    unit::Pct,
+    views::slider::SliderCustomExprStyle,
+};
+use tokio::{runtime::Runtime, time::Instant};
 use tokio_stream::wrappers::IntervalStream;
 
 fn main() {
@@ -77,7 +78,11 @@ fn app_view() -> impl IntoView {
             .items_center()
             .justify_center()
     })
-    .on_key_down(Key::Named(NamedKey::F11), |_| true, |_| inspect())
+    .on_event_stop(el::KeyUp, |_, KeyboardEvent { key, .. }| {
+        if *key == Key::Named(NamedKey::F11) {
+            inspect();
+        }
+    })
 }
 
 /// A slider with a thin bar instead of the default thick bar.
@@ -101,7 +106,7 @@ fn gauge(fill_percent: impl SignalGet<Pct> + 'static + Copy) -> slider::Slider {
             let fill_percent = fill_percent.get().0;
             s.width(200).set_disabled(true).with_theme(move |s, t| {
                 s.apply_if(fill_percent == 100., |s| {
-                    s.custom(|s: SliderCustomStyle| s.accent_bar_color(t.success()))
+                    s.custom(|s: SliderCustomExprStyle| s.accent_bar_color(t.def(|t| t.success())))
                 })
             })
         })

@@ -97,12 +97,12 @@ pub fn has_unmatched_pair(line: &str) -> bool {
             }
         }
     }
-    for (_, pair_count) in count.iter() {
+    for pair_count in count.values() {
         if *pair_count < 0 {
             return true;
         }
     }
-    for (_, left) in pair_first.iter() {
+    for left in pair_first.values() {
         if *left {
             return true;
         }

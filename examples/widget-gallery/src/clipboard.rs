@@ -1,4 +1,4 @@
-use floem::{prelude::*, Clipboard};
+use floem::{Clipboard, prelude::*};
 
 use crate::form::{form, form_item};
 
@@ -16,10 +16,12 @@ pub fn clipboard_view() -> impl IntoView {
         form_item(
             "Copy from input",
             Stack::horizontal((
-                text_input(text1).style(|s| s.width_full().min_width(150)),
-                Button::new("Copy").action(move || {
-                    let _ = Clipboard::set_contents(text1.get());
-                }),
+                TextInput::new(text1).style(|s| s.width_full().min_width(150)),
+                Button::new("Copy")
+                    .style(|s| s.flex_shrink(0.))
+                    .action(move || {
+                        let _ = Clipboard::set_contents(text1.get());
+                    }),
             ))
             .style(|s| s.gap(5)),
         ),

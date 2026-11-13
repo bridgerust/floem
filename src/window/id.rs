@@ -238,6 +238,18 @@ pub trait WindowIdExt: WindowIdExtSealed {
     ///
     /// The returned [`RawDisplayHandle`] is only valid while the window is alive.
     fn raw_display_handle(&self) -> Option<RawDisplayHandle>;
+
+    /// Run a closure with this window's native [`raw_window_handle::WindowHandle`], returning the
+    /// closure's result, or `None` if there is no live OS window for this id (or the platform could
+    /// not produce a handle).
+    ///
+    /// This is a backend-neutral handle (`raw-window-handle` is a crate Floem already depends on),
+    /// so embedders can integrate native children — e.g. attaching a child webview via `wry`'s
+    /// `build_as_child` — against the parent window without Floem exposing its windowing-backend
+    /// types. The handle is only valid for the duration of `f`.
+    fn with_window_handle<F, T>(&self, f: F) -> Option<T>
+    where
+        F: FnOnce(raw_window_handle::WindowHandle<'_>) -> T;
 }
 
 impl WindowIdExt for WindowId {
@@ -308,6 +320,17 @@ impl WindowIdExt for WindowId {
 
     fn raw_display_handle(&self) -> Option<RawDisplayHandle> {
         raw_display_handle(self)
+    }
+
+    fn with_window_handle<F, T>(&self, f: F) -> Option<T>
+    where
+        F: FnOnce(raw_window_handle::WindowHandle<'_>) -> T,
+    {
+        use raw_window_handle::HasWindowHandle;
+        // `Window: HasWindowHandle` (Floem already relies on this internally to build its render
+        // surface); hand the closure the resulting `WindowHandle`, which itself impls
+        // `HasWindowHandle` for use with e.g. `wry`'s `build_as_child`.
+        with_window(self, move |window| window.window_handle().ok().map(f)).flatten()
     }
 }
 

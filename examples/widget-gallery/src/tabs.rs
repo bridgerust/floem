@@ -1,7 +1,8 @@
+use floem::peniko::Brush;
 use floem::prelude::palette::css;
 use floem::prelude::*;
 use floem::reactive::Effect;
-use floem::style::BoxShadow;
+use floem::style::{BorderTopColor, BoxShadow, CustomStylable};
 use floem::taffy::AlignContent;
 use floem::theme::StyleThemeExt;
 
@@ -48,7 +49,7 @@ pub fn tab_view() -> impl IntoView {
         move || tabs.get(),
         |tab| tab.idx,
         move |tab| {
-            tab_side_item(tab.clone(), active_tab).on_click_stop(move |_| {
+            tab_side_item(tab.clone(), active_tab).action(move || {
                 active_tab.update(|a| {
                     *a = Some(tab.idx);
                 });
@@ -57,13 +58,13 @@ pub fn tab_view() -> impl IntoView {
     )
     .style(|s| s.flex_col().width_full().row_gap(5.))
     .scroll()
-    .on_click_stop(move |_| {
+    .action(move || {
         if active_tab.with_untracked(|act| act.is_some()) {
             active_tab.set(None)
         }
     })
     .style(|s| s.size_full().padding(5.).padding_right(7.))
-    .scroll_style(|s| s.handle_thickness(6.).shrink_to_fit())
+    .custom_style(|s| s.shrink_to_fit())
     .style(|s| {
         s.width(140.)
             .min_width(140.)
@@ -72,13 +73,12 @@ pub fn tab_view() -> impl IntoView {
             .with_theme(|s, t| s.border_color(t.border_muted()))
     });
 
-    let tabs_content_view = Stack::new((tab(
+    let tabs_content_view = tab(
         move || active_tab.get(),
         move || tabs.get(),
         |tab| tab.idx,
         show_tab_content,
     )
-    .style(|s| s.size_full()),))
     .style(|s| s.size_full());
 
     Stack::vertical((
@@ -95,7 +95,7 @@ pub fn tab_view() -> impl IntoView {
             }),
         ))
         .style(|s| {
-            s.height(40.px())
+            s.height(40.pt())
                 .width_full()
                 .border_bottom(1.)
                 .with_theme(|s, t| s.border_color(t.border_muted()))
@@ -104,7 +104,7 @@ pub fn tab_view() -> impl IntoView {
                 .items_center()
                 .align_content(AlignContent::SpaceAround)
         }),
-        Stack::new((tabs_view, tabs_content_view)).style(|s| s.height(400.px()).width(500.px())),
+        Stack::new((tabs_view, tabs_content_view)).style(|s| s.height(400.pt()).width(500.pt())),
     ))
     .style(|s| s.size_full())
     .container()
@@ -122,16 +122,23 @@ fn show_tab_content(tab: TabContent) -> impl IntoView {
         "is now active".style(|s| s.font_size(13.)),
     ))
     .style(|s| {
-        s.size(150.px(), 150.px())
+        s.size(150.pt(), 150.pt())
             .items_center()
             .justify_center()
             .row_gap(10.)
             .border_radius(7.)
             .border_top(0.6)
             .with_theme(|s, t| {
-                s.background(t.bg_elevated())
-                    .border_top_color(css::WHITE)
-                    .apply_if(t.is_dark, |s| s.border_top_color(t.border()))
+                s.background(t.bg_elevated()).set_context_opt(
+                    BorderTopColor,
+                    t.def(|t| {
+                        Some(if t.is_dark {
+                            Brush::Solid(t.border())
+                        } else {
+                            Brush::Solid(css::WHITE)
+                        })
+                    }),
+                )
             })
             .border_bottom_color(css::BLACK.multiply_alpha(0.7))
             .apply_box_shadows(vec![
@@ -162,7 +169,7 @@ fn tab_side_item(tab: TabContent, act_tab: RwSignal<Option<usize>>) -> impl Into
         .button()
         .style(move |s| {
             s.width_full()
-                .height(36.px())
+                .height(36.pt())
                 .apply_if(act_tab.get().is_some_and(|a| a == tab.idx), |s| {
                     s.with_theme(|s, t| s.border_color(t.primary()))
                 })

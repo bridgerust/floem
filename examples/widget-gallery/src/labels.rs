@@ -1,6 +1,7 @@
 use floem::{
     prelude::*,
-    text::{Style as FontStyle, Weight},
+    text::{Alignment, FontStyle, FontWeight},
+    theme::StyleThemeExt,
 };
 
 use crate::form::{form, form_item};
@@ -18,9 +19,18 @@ pub fn label_view() -> impl IntoView {
                 s.background(palette::css::YELLOW)
                     .padding(10.0)
                     .color(palette::css::GREEN)
-                    .font_weight(Weight::BOLD)
+                    .font_weight(FontWeight::BOLD)
                     .font_style(FontStyle::Italic)
                     .font_size(24.0)
+            }),
+        ),
+        form_item(
+            "Centered Label:",
+            "This is a label\nthat is centered on two lines".style(|s| {
+                s.with_theme(|s, t| s.background(t.bg_elevated()))
+                    .padding(10.0)
+                    .font_size(24.0)
+                    .text_align(Alignment::Center)
             }),
         ),
     ))

@@ -2,18 +2,18 @@ use std::{any::Any, cell::RefCell, collections::HashSet, marker::PhantomData, me
 
 use crate::{
     id::Id,
-    runtime::{Runtime, RUNTIME},
+    runtime::{RUNTIME, Runtime},
     scope::Scope,
 };
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Default)]
-pub(crate) enum EffectPriority {
+pub enum EffectPriority {
     #[default]
     Normal,
     High,
 }
 
-pub(crate) trait EffectTrait: Any {
+pub trait EffectTrait: Any {
     fn id(&self) -> Id;
     fn run(&self) -> bool;
     fn add_observer(&self, id: Id);
@@ -290,7 +290,7 @@ where
     Runtime::assert_ui_thread();
     let effect_id = effect.id();
 
-    let result = RUNTIME.with(|runtime| {
+    RUNTIME.with(|runtime| {
         *runtime.current_effect.borrow_mut() = Some(effect.clone());
 
         let effect_scope = Scope(effect_id, PhantomData);
@@ -302,9 +302,7 @@ where
         *runtime.current_effect.borrow_mut() = None;
 
         result
-    });
-
-    result
+    })
 }
 
 /// Do a observer clean up at the beginning of each effect run. It clears the effect
