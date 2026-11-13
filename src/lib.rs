@@ -179,6 +179,7 @@
 pub mod action;
 pub mod animate;
 mod app;
+mod box_tree;
 pub mod context;
 pub mod event;
 pub mod ext_event;
@@ -187,6 +188,7 @@ pub mod layout;
 mod message;
 pub mod paint;
 pub mod platform;
+pub mod text;
 /// Re-export easing module from animate for backward compatibility.
 pub use animate::easing;
 /// Re-export dropped_file module from event for backward compatibility.
@@ -218,12 +220,14 @@ pub mod receiver_signal {
     pub use stream_signal::*;
 }
 
+pub use box_tree::{BoxTree, ElementId, ElementMeta, FocusNavMeta};
+pub(crate) use box_tree::{bump_focus_nav_meta_revision, focus_nav_meta_revision};
+
 pub use app::{AppConfig, AppEvent, Application, launch, quit_app, reopen};
 pub use floem_reactive as reactive;
 pub use floem_renderer::Renderer;
 pub use floem_renderer::Svg as RendererSvg;
 pub use floem_renderer::gpu_resources::GpuResources;
-pub use floem_renderer::text;
 pub use imbl;
 pub use layout::ScreenLayout;
 #[cfg(not(target_arch = "wasm32"))]
@@ -236,24 +240,30 @@ pub use platform::open_file;
 pub use platform::save_as;
 pub use platform::{Clipboard, ClipboardError, FileDialogOptions, FileInfo, FileSpec};
 pub use platform::{Menu, SubMenu};
+/// Re-export the handle types used by the native window and display helpers.
+pub use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 pub use taffy;
 pub use ui_events;
+pub use understory_focus;
 pub use view::ViewId;
-pub use view::{
-    AnyView, HasViewId, IntoView, LazyView, ParentView, View, default_compute_layout,
-    recursively_layout_view,
-};
+pub use view::{AnyView, HasViewId, IntoView, LazyView, ParentView, View};
 pub use view::{Stack, StackOffset};
-pub use window::{Urgency, WindowIdExt, WindowState, close_window, new_window};
+pub use window::{
+    Urgency, WindowIdExt, WindowState, close_window, new_window, request_close_window,
+};
 pub use window::{raw_display_handle, raw_window_handle};
-/// Re-export raw_window_handle types that users will need when working with native handles.
-pub use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
+
+#[doc(hidden)]
+pub use app::take_close_window_event_count;
 
 /// Re-export unit and theme modules from style for backward compatibility.
 pub use style::{theme, unit};
 
 pub mod prelude {
     pub use crate::Renderer;
+    pub use crate::event::listener as el;
+    pub use crate::event::listener;
+    pub use crate::event::listener::EventListenerTrait;
     pub use crate::unit::{DurationUnitExt, UnitExt};
     pub use crate::view::IntoViewIter;
     pub use crate::view::ViewTuple;
@@ -263,6 +273,7 @@ pub mod prelude {
     pub use floem_reactive::{
         RwSignal, SignalGet, SignalTrack, SignalUpdate, SignalWith, create_rw_signal, create_signal,
     };
+    pub use palette::css;
     pub use peniko::Color;
     pub use peniko::color::palette;
     pub use ui_events::{

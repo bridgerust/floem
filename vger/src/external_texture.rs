@@ -7,6 +7,8 @@
 //! entirely on the GPU and out of the atlas.
 
 use std::collections::HashMap;
+
+use floem_renderer::ExternalTexture;
 use wgpu::util::DeviceExt;
 
 const SHADER: &str = r#"
@@ -61,35 +63,33 @@ impl ExtRenderer {
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
         });
 
-        let bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("external_texture_bgl"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("external_texture_bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
                     },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-            });
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
 
-        let pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("external_texture_pl"),
-                bind_group_layouts: &[&bind_group_layout],
-                push_constant_ranges: &[],
-            });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("external_texture_pl"),
+            bind_group_layouts: &[&bind_group_layout],
+            push_constant_ranges: &[],
+        });
 
         let vertex_layout = wgpu::VertexBufferLayout {
             array_stride: 16, // 4 floats
@@ -155,19 +155,22 @@ impl ExtRenderer {
         self.draws.clear();
     }
 
-    /// Upload `data` (RGBA8, `width*height*4` bytes) into the texture for `id`
-    /// (creating/resizing as needed) and record a quad at the given NDC corners.
+    /// Upload the frame (creating or resizing the texture as needed) and
+    /// record a quad at the given NDC corners.
     /// `verts` is 6 vertices of (pos.x, pos.y, uv.x, uv.y) in NDC.
     pub fn draw(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        id: u64,
-        data: &[u8],
-        width: u32,
-        height: u32,
+        frame: ExternalTexture<'_>,
         verts: [f32; 24],
     ) {
+        let ExternalTexture {
+            id,
+            data,
+            width,
+            height,
+        } = frame;
         if width == 0 || height == 0 {
             return;
         }
@@ -244,12 +247,7 @@ impl ExtRenderer {
     }
 
     /// Draw all recorded quads onto `view`, preserving existing contents.
-    pub fn flush(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        view: &wgpu::TextureView,
-    ) {
+    pub fn flush(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, view: &wgpu::TextureView) {
         if self.draws.is_empty() {
             return;
         }
@@ -266,10 +264,9 @@ impl ExtRenderer {
             usage: wgpu::BufferUsages::VERTEX,
         });
 
-        let mut encoder =
-            device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("external_texture_encoder"),
-            });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("external_texture_encoder"),
+        });
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("external_texture_pass"),

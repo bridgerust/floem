@@ -63,16 +63,18 @@ use std::any::Any;
 use std::cell::Cell;
 use std::hash::Hash;
 use std::rc::Rc;
-use taffy::tree::NodeId;
 
 use crate::{
     Renderer,
-    context::{ComputeLayoutCx, EventCx, LayoutCx, PaintCx, StyleCx, UpdateCx},
-    event::{Event, EventPropagation},
+    context::{EventCx, PaintCx, StyleCx, UpdateCx},
+    event::EventPropagation,
     style::{LayoutProps, Style, StyleClassRef},
-    unit::PxPct,
-    views::{DynamicView, dyn_stack::FxIndexSet, dyn_stack::HashRun, dyn_stack::diff, dyn_view},
-    window::state::WindowState,
+    unit::Length,
+    views::{
+        DynamicView,
+        dyn_stack::{FxIndexSet, HashRun, diff},
+        dyn_view,
+    },
 };
 use state::ViewStyleProps;
 
@@ -904,21 +906,6 @@ impl IntoView for LazyView<()> {
     }
 }
 
-/// Default implementation of `View::layout()` which can be used by
-/// view implementations that need the default behavior and also need
-/// to implement that method to do additional work.
-pub fn recursively_layout_view(id: ViewId, cx: &mut LayoutCx) -> NodeId {
-    cx.layout_node(id, true, |cx| {
-        let mut nodes = Vec::new();
-        for child in id.children() {
-            let view = child.view();
-            let mut view = view.borrow_mut();
-            nodes.push(view.layout(cx));
-        }
-        nodes
-    })
-}
-
 /// The View trait contains the methods for implementing updates, styling, layout, events, and painting.
 ///
 /// The [`id`](View::id) method must be implemented.
@@ -1003,58 +990,104 @@ pub trait View {
         let _ = cx;
     }
 
-    /// Use this method to layout the view's children.
-    /// Usually you'll do this by calling [`LayoutCx::layout_node`].
+    /// Handles an event during the **capture phase** of event propagation.
     ///
-    /// If the layout changes needs other passes to run you're expected to call
-    /// `cx.window_state_mut().request_changes`.
-    fn layout(&mut self, cx: &mut LayoutCx) -> NodeId {
-        recursively_layout_view(self.id(), cx)
-    }
-
-    /// Responsible for computing the layout of the view's children.
+    /// The capture phase runs **from the root of the dispatch path down toward
+    /// the target element**, before the target itself receives the event. This
+    /// method is invoked for each element encountered during that downward
+    /// traversal.
     ///
-    /// If the layout changes needs other passes to run you're expected to call
-    /// `cx.window_state_mut().request_changes`.
-    fn compute_layout(&mut self, cx: &mut ComputeLayoutCx) -> Option<Rect> {
-        default_compute_layout(self.id(), cx)
-    }
-
-    fn event_before_children(&mut self, cx: &mut EventCx, event: &Event) -> EventPropagation {
-        // these are here to just ignore these arguments in the default case
-        let _ = cx;
-        let _ = event;
-
+    /// In contrast, [`Self::event`] runs during the **target and bubble phases**,
+    /// after the event reaches the target and begins propagating back up the
+    /// ancestor chain.
+    ///
+    /// Capture handlers are useful when an element must observe or influence an
+    /// event **before the target processes it**. This can be necessary when:
+    ///
+    /// - the ancestor needs an opportunity to intercept or block the event before
+    ///   it reaches the target
+    /// - the ancestor must coordinate state across a subtree before the target
+    ///   reacts
+    /// - the event must be transformed or redirected before normal handling occurs
+    ///
+    /// Returning [`EventPropagation::Stop`] prevents the event from propagating to
+    /// additional elements further along the dispatch path. The current element’s
+    /// handlers will still complete.
+    ///
+    /// This differs from [`EventCx::stop_immediate_propagation`], which halts
+    /// dispatch **immediately**, preventing any remaining handlers on the current
+    /// element from running.
+    ///
+    /// Calling [`EventCx::prevent_default`] marks the event as having its default
+    /// behavior suppressed. This flag is shared across all phases of dispatch,
+    /// allowing capture handlers to prevent the default action before the event
+    /// reaches the target.
+    ///
+    /// # See also
+    ///
+    /// - [`Self::event`] — handles the same event during the target and bubble phases.
+    ///
+    /// # Default behavior
+    ///
+    /// The default implementation ignores the event and allows propagation to
+    /// continue.
+    fn event_capture(&mut self, _cx: &mut EventCx) -> EventPropagation {
         EventPropagation::Continue
     }
 
-    fn event_after_children(&mut self, cx: &mut EventCx, event: &Event) -> EventPropagation {
-        // these are here to just ignore these arguments in the default case
-        let _ = cx;
-        let _ = event;
-
+    /// Handles an event during the **target and bubble phases** of event propagation.
+    ///
+    /// After the capture phase completes, the event is delivered to the **target
+    /// element** and then propagates upward through its ancestors. This method is
+    /// invoked for the target and for each ancestor encountered during that upward
+    /// traversal.
+    ///
+    /// In contrast, [`Self::event_capture`] runs earlier during the **capture phase**
+    /// while the event travels downward toward the target.
+    ///
+    /// Returning [`EventPropagation::Stop`] prevents the event from propagating to
+    /// additional elements further along the dispatch path. The current element’s
+    /// handlers will still complete.
+    ///
+    /// This differs from [`EventCx::stop_immediate_propagation`], which stops
+    /// dispatch immediately and prevents any remaining handlers on the current
+    /// element from executing.
+    ///
+    /// Calling [`EventCx::prevent_default`] suppresses the event’s default behavior.
+    /// This flag is shared across all phases of dispatch and can be set in either
+    /// [`Self::event_capture`] or [`Self::event`].
+    ///
+    /// # Propagation behavior
+    ///
+    /// Event dispatch proceeds in this order:
+    ///
+    /// 1. [`Self::event_capture`] on ancestors from root → target
+    /// 2. [`Self::event`] on the target
+    /// 3. [`Self::event`] on ancestors from target → root
+    ///
+    /// Propagation may be stopped at any point by returning
+    /// [`EventPropagation::Stop`] or by calling
+    /// [`EventCx::stop_immediate_propagation`].
+    ///
+    /// # Default behavior
+    ///
+    /// The default implementation ignores the event and allows propagation to
+    /// continue.
+    fn event(&mut self, _cx: &mut EventCx) -> EventPropagation {
         EventPropagation::Continue
     }
 
-    /// `View`-specific implementation. Will be called in [`PaintCx::paint_view`](crate::context::PaintCx::paint_view).
-    /// Usually you'll call `paint_view` for every child view. But you might also draw text, adjust the offset, clip
-    /// or draw text.
+    /// `View`-specific implementation. Called during paint traversal for this view.
+    /// Children are painted automatically by Floem.
+    /// Views should only paint their own content (backgrounds, borders, custom drawing).
     fn paint(&mut self, cx: &mut PaintCx) {
-        cx.paint_children(self.id());
+        let _ = cx;
+        // Default implementation: no custom painting
+        // Children are painted automatically by traversal
     }
 
-    /// Scrolls the view and all direct and indirect children to bring the `target` view to be
-    /// visible. Returns true if this view contains or is the target.
-    fn scroll_to(&mut self, cx: &mut WindowState, target: ViewId, rect: Option<Rect>) -> bool {
-        if self.id() == target {
-            return true;
-        }
-        let mut found = false;
-
-        for child in self.id().children() {
-            found |= child.view().borrow_mut().scroll_to(cx, target, rect);
-        }
-        found
+    fn post_paint(&mut self, cx: &mut PaintCx) {
+        let _ = cx;
     }
 }
 
@@ -1083,104 +1116,64 @@ impl View for Box<dyn View> {
         (**self).style_pass(cx)
     }
 
-    fn layout(&mut self, cx: &mut LayoutCx) -> NodeId {
-        (**self).layout(cx)
+    fn event_capture(&mut self, cx: &mut EventCx) -> EventPropagation {
+        (**self).event_capture(cx)
     }
 
-    fn event_before_children(&mut self, cx: &mut EventCx, event: &Event) -> EventPropagation {
-        (**self).event_before_children(cx, event)
-    }
-
-    fn event_after_children(&mut self, cx: &mut EventCx, event: &Event) -> EventPropagation {
-        (**self).event_after_children(cx, event)
-    }
-
-    fn compute_layout(&mut self, cx: &mut ComputeLayoutCx) -> Option<Rect> {
-        (**self).compute_layout(cx)
+    fn event(&mut self, cx: &mut EventCx) -> EventPropagation {
+        (**self).event(cx)
     }
 
     fn paint(&mut self, cx: &mut PaintCx) {
         (**self).paint(cx)
     }
 
-    fn scroll_to(&mut self, cx: &mut WindowState, target: ViewId, rect: Option<Rect>) -> bool {
-        (**self).scroll_to(cx, target, rect)
+    fn post_paint(&mut self, cx: &mut PaintCx) {
+        (**self).post_paint(cx)
     }
 }
 
-/// Computes the layout of the view's children, if any.
-pub fn default_compute_layout(id: ViewId, cx: &mut ComputeLayoutCx) -> Option<Rect> {
-    let mut layout_rect: Option<Rect> = None;
-    for child in id.children() {
-        if !child.is_hidden() {
-            let child_layout = cx.compute_view_layout(child);
-            if let Some(child_layout) = child_layout {
-                if let Some(rect) = layout_rect {
-                    layout_rect = Some(rect.union(child_layout));
-                } else {
-                    layout_rect = Some(child_layout);
-                }
-            }
-        }
-    }
-    layout_rect
+pub(crate) fn border_radius(
+    radius: crate::unit::Length,
+    size: f64,
+    resolve_cx: &crate::unit::FontSizeCx,
+) -> f64 {
+    radius.resolve(size, resolve_cx)
 }
 
-pub(crate) fn border_radius(radius: crate::unit::PxPct, size: f64) -> f64 {
-    match radius {
-        crate::unit::PxPct::Px(px) => px,
-        crate::unit::PxPct::Pct(pct) => size * (pct / 100.),
-    }
-}
-
-fn border_to_radii_view(style: &ViewStyleProps, size: Size) -> RoundedRectRadii {
+fn border_to_radii_view(
+    style: &ViewStyleProps,
+    size: Size,
+    resolve_cx: &crate::unit::FontSizeCx,
+) -> RoundedRectRadii {
     let border_radii = style.border_radius();
     RoundedRectRadii {
         top_left: border_radius(
-            border_radii.top_left.unwrap_or(PxPct::Px(0.0)),
+            border_radii.top_left.unwrap_or(Length::Pt(0.0)),
             size.min_side(),
+            resolve_cx,
         ),
         top_right: border_radius(
-            border_radii.top_right.unwrap_or(PxPct::Px(0.0)),
+            border_radii.top_right.unwrap_or(Length::Pt(0.0)),
             size.min_side(),
+            resolve_cx,
         ),
         bottom_left: border_radius(
-            border_radii.bottom_left.unwrap_or(PxPct::Px(0.0)),
+            border_radii.bottom_left.unwrap_or(Length::Pt(0.0)),
             size.min_side(),
+            resolve_cx,
         ),
         bottom_right: border_radius(
-            border_radii.bottom_right.unwrap_or(PxPct::Px(0.0)),
+            border_radii.bottom_right.unwrap_or(Length::Pt(0.0)),
             size.min_side(),
+            resolve_cx,
         ),
     }
 }
 
-pub(crate) fn border_to_radii(style: &Style, size: Size) -> RoundedRectRadii {
-    let border_radii = style.get(crate::style::BorderRadiusProp);
-    RoundedRectRadii {
-        top_left: border_radius(
-            border_radii.top_left.unwrap_or(PxPct::Px(0.0)),
-            size.min_side(),
-        ),
-        top_right: border_radius(
-            border_radii.top_right.unwrap_or(PxPct::Px(0.0)),
-            size.min_side(),
-        ),
-        bottom_left: border_radius(
-            border_radii.bottom_left.unwrap_or(PxPct::Px(0.0)),
-            size.min_side(),
-        ),
-        bottom_right: border_radius(
-            border_radii.bottom_right.unwrap_or(PxPct::Px(0.0)),
-            size.min_side(),
-        ),
-    }
-}
-
-pub(crate) fn paint_bg(cx: &mut PaintCx, style: &ViewStyleProps, size: Size) {
-    let radii = border_to_radii_view(style, size);
+pub(crate) fn paint_bg(cx: &mut PaintCx, style: &ViewStyleProps, rect: Rect) {
+    let radii = border_to_radii_view(style, rect.size(), &cx.font_size_cx);
     if radii_max(radii) > 0.0 {
-        let rect = size.to_rect();
         paint_box_shadow(cx, style, rect, Some(radii));
         let bg = match style.background() {
             Some(color) => color,
@@ -1189,12 +1182,12 @@ pub(crate) fn paint_bg(cx: &mut PaintCx, style: &ViewStyleProps, size: Size) {
         let rounded_rect = rect.to_rounded_rect(radii);
         cx.fill(&rounded_rect, &bg, 0.0);
     } else {
-        paint_box_shadow(cx, style, size.to_rect(), None);
+        paint_box_shadow(cx, style, rect, None);
         let bg = match style.background() {
             Some(color) => color,
             None => return,
         };
-        cx.fill(&size.to_rect(), &bg, 0.0);
+        cx.fill(&rect, &bg, 0.0);
     }
 }
 
@@ -1206,30 +1199,12 @@ fn paint_box_shadow(
 ) {
     for shadow in &style.shadow() {
         let min = rect.size().min_side();
-        let left_offset = match shadow.left_offset {
-            crate::unit::PxPct::Px(px) => px,
-            crate::unit::PxPct::Pct(pct) => min * (pct / 100.),
-        };
-        let right_offset = match shadow.right_offset {
-            crate::unit::PxPct::Px(px) => px,
-            crate::unit::PxPct::Pct(pct) => min * (pct / 100.),
-        };
-        let top_offset = match shadow.top_offset {
-            crate::unit::PxPct::Px(px) => px,
-            crate::unit::PxPct::Pct(pct) => min * (pct / 100.),
-        };
-        let bottom_offset = match shadow.bottom_offset {
-            crate::unit::PxPct::Px(px) => px,
-            crate::unit::PxPct::Pct(pct) => min * (pct / 100.),
-        };
-        let spread = match shadow.spread {
-            crate::unit::PxPct::Px(px) => px,
-            crate::unit::PxPct::Pct(pct) => min * (pct / 100.),
-        };
-        let blur_radius = match shadow.blur_radius {
-            crate::unit::PxPct::Px(px) => px,
-            crate::unit::PxPct::Pct(pct) => min * (pct / 100.),
-        };
+        let left_offset = shadow.left_offset.resolve(min, &cx.font_size_cx);
+        let right_offset = shadow.right_offset.resolve(min, &cx.font_size_cx);
+        let top_offset = shadow.top_offset.resolve(min, &cx.font_size_cx);
+        let bottom_offset = shadow.bottom_offset.resolve(min, &cx.font_size_cx);
+        let spread = shadow.spread.resolve(min, &cx.font_size_cx);
+        let blur_radius = shadow.blur_radius.resolve(min, &cx.font_size_cx);
         let inset = Insets::new(
             left_offset / 2.0,
             top_offset / 2.0,
@@ -1245,18 +1220,33 @@ fn paint_box_shadow(
         }
     }
 }
-#[cfg(feature = "vello")]
-pub(crate) fn paint_outline(cx: &mut PaintCx, style: &ViewStyleProps, size: Size) {
+pub(crate) fn paint_outline(cx: &mut PaintCx, style: &ViewStyleProps, rect: Rect) {
+    if cx.is_vger() {
+        let outline = &style.outline();
+        if outline.width == 0. {
+            return;
+        }
+        let half = outline.width / 2.0;
+        let rect = rect.inflate(half, half);
+        let border_radii = border_to_radii_view(style, rect.size(), &cx.font_size_cx);
+        cx.stroke(
+            &rect.to_rounded_rect(radii_add(border_radii, half)),
+            &style.outline_color(),
+            outline,
+        );
+        return;
+    }
+
     use crate::{
         paint::{BorderPath, BorderPathEvent},
         unit::Pct,
     };
 
     let outlines = [
-        (style.outline().0, style.outline_color()),
-        (style.outline().0, style.outline_color()),
-        (style.outline().0, style.outline_color()),
-        (style.outline().0, style.outline_color()),
+        (style.outline(), style.outline_color()),
+        (style.outline(), style.outline_color()),
+        (style.outline(), style.outline_color()),
+        (style.outline(), style.outline_color()),
     ];
 
     // Early return if no outlines
@@ -1268,11 +1258,12 @@ pub(crate) fn paint_outline(cx: &mut PaintCx, style: &ViewStyleProps, size: Size
     let Pct(outline_progress) = style.outline_progress();
 
     let half_width = outlines[0].0.width / 2.0;
-    let rect = size.to_rect().inflate(half_width, half_width);
+    let rect = rect.inflate(half_width, half_width);
 
-    let radii = radii_map(border_to_radii_view(style, size), |r| {
-        (r + half_width).max(0.0)
-    });
+    let radii = radii_map(
+        border_to_radii_view(style, rect.size(), &cx.font_size_cx),
+        |r| (r + half_width).max(0.0),
+    );
 
     let mut outline_path = BorderPath::new(rect, radii);
 
@@ -1297,119 +1288,95 @@ pub(crate) fn paint_outline(cx: &mut PaintCx, style: &ViewStyleProps, size: Size
     assert!(current_path.is_empty());
 }
 
-#[cfg(not(feature = "vello"))]
-pub(crate) fn paint_outline(cx: &mut PaintCx, style: &ViewStyleProps, size: Size) {
-    let outline = &style.outline().0;
-    if outline.width == 0. {
-        // TODO: we should warn! when outline is < 0
-        return;
-    }
-    let half = outline.width / 2.0;
-    let rect = size.to_rect().inflate(half, half);
-    let border_radii = border_to_radii_view(style, size);
-    cx.stroke(
-        &rect.to_rounded_rect(radii_add(border_radii, half)),
-        &style.outline_color(),
-        outline,
-    );
-}
-
-#[cfg(not(feature = "vello"))]
 pub(crate) fn paint_border(
     cx: &mut PaintCx,
     layout_style: &LayoutProps,
     style: &ViewStyleProps,
-    size: Size,
+    rect: Rect,
 ) {
-    let border = layout_style.border();
+    if cx.is_vger() {
+        let border = layout_style.border();
 
-    let left = border.left.map(|v| v.0).unwrap_or(Stroke::new(0.));
-    let top = border.top.map(|v| v.0).unwrap_or(Stroke::new(0.));
-    let right = border.right.map(|v| v.0).unwrap_or(Stroke::new(0.));
-    let bottom = border.bottom.map(|v| v.0).unwrap_or(Stroke::new(0.));
+        let left = border.left.unwrap_or(Stroke::new(0.));
+        let top = border.top.unwrap_or(Stroke::new(0.));
+        let right = border.right.unwrap_or(Stroke::new(0.));
+        let bottom = border.bottom.unwrap_or(Stroke::new(0.));
 
-    if left.width == top.width
-        && top.width == right.width
-        && right.width == bottom.width
-        && bottom.width == left.width
-        && left.width > 0.0
-        && style.border_color().left.is_some()
-        && style.border_color().top.is_some()
-        && style.border_color().right.is_some()
-        && style.border_color().bottom.is_some()
-        && style.border_color().left == style.border_color().top
-        && style.border_color().top == style.border_color().right
-        && style.border_color().right == style.border_color().bottom
-    {
-        let half = left.width / 2.0;
-        let rect = size.to_rect().inflate(-half, -half);
-        let radii = border_to_radii_view(style, size);
-        if let Some(color) = style.border_color().left {
-            if radii_max(radii) > 0.0 {
-                let radii = radii_map(radii, |r| (r - half).max(0.0));
-                cx.stroke(&rect.to_rounded_rect(radii), &color, &left);
-            } else {
-                cx.stroke(&rect, &color, &left);
-            }
-        }
-    } else {
-        // TODO: now with vello should we do this left.width > 0. check?
-        if left.width > 0.0
-            && let Some(color) = style.border_color().left
+        if left.width == top.width
+            && top.width == right.width
+            && right.width == bottom.width
+            && bottom.width == left.width
+            && left.width > 0.0
+            && style.border_color().left.is_some()
+            && style.border_color().top.is_some()
+            && style.border_color().right.is_some()
+            && style.border_color().bottom.is_some()
+            && style.border_color().left == style.border_color().top
+            && style.border_color().top == style.border_color().right
+            && style.border_color().right == style.border_color().bottom
         {
             let half = left.width / 2.0;
-            cx.stroke(
-                &Line::new(Point::new(half, 0.0), Point::new(half, size.height)),
-                &color,
-                &left,
-            );
+            let rect = rect.inflate(-half, -half);
+            let radii = border_to_radii_view(style, rect.size(), &cx.font_size_cx);
+            if let Some(color) = style.border_color().left {
+                if radii_max(radii) > 0.0 {
+                    let radii = radii_map(radii, |r| (r - half).max(0.0));
+                    cx.stroke(&rect.to_rounded_rect(radii), &color, &left);
+                } else {
+                    cx.stroke(&rect, &color, &left);
+                }
+            }
+        } else {
+            if left.width > 0.0
+                && let Some(color) = style.border_color().left
+            {
+                let half = left.width / 2.0;
+                cx.stroke(
+                    &Line::new(Point::new(half, 0.0), Point::new(half, rect.height())),
+                    &color,
+                    &left,
+                );
+            }
+            if right.width > 0.0
+                && let Some(color) = style.border_color().right
+            {
+                let half = right.width / 2.0;
+                cx.stroke(
+                    &Line::new(
+                        Point::new(rect.width() - half, 0.0),
+                        Point::new(rect.width() - half, rect.height()),
+                    ),
+                    &color,
+                    &right,
+                );
+            }
+            if top.width > 0.0
+                && let Some(color) = style.border_color().top
+            {
+                let half = top.width / 2.0;
+                cx.stroke(
+                    &Line::new(Point::new(0.0, half), Point::new(rect.width(), half)),
+                    &color,
+                    &top,
+                );
+            }
+            if bottom.width > 0.0
+                && let Some(color) = style.border_color().bottom
+            {
+                let half = bottom.width / 2.0;
+                cx.stroke(
+                    &Line::new(
+                        Point::new(0.0, rect.height() - half),
+                        Point::new(rect.width(), rect.height() - half),
+                    ),
+                    &color,
+                    &bottom,
+                );
+            }
         }
-        if right.width > 0.0
-            && let Some(color) = style.border_color().right
-        {
-            let half = right.width / 2.0;
-            cx.stroke(
-                &Line::new(
-                    Point::new(size.width - half, 0.0),
-                    Point::new(size.width - half, size.height),
-                ),
-                &color,
-                &right,
-            );
-        }
-        if top.width > 0.0
-            && let Some(color) = style.border_color().top
-        {
-            let half = top.width / 2.0;
-            cx.stroke(
-                &Line::new(Point::new(0.0, half), Point::new(size.width, half)),
-                &color,
-                &top,
-            );
-        }
-        if bottom.width > 0.0
-            && let Some(color) = style.border_color().bottom
-        {
-            let half = bottom.width / 2.0;
-            cx.stroke(
-                &Line::new(
-                    Point::new(0.0, size.height - half),
-                    Point::new(size.width, size.height - half),
-                ),
-                &color,
-                &bottom,
-            );
-        }
+        return;
     }
-}
 
-#[cfg(feature = "vello")]
-pub(crate) fn paint_border(
-    cx: &mut PaintCx,
-    layout_style: &LayoutProps,
-    style: &ViewStyleProps,
-    size: Size,
-) {
     use crate::{
         paint::{BorderPath, BorderPathEvent},
         unit::Pct,
@@ -1418,19 +1385,19 @@ pub(crate) fn paint_border(
     let border = layout_style.border();
     let borders = [
         (
-            border.top.map(|v| v.0).unwrap_or(Stroke::new(0.)),
+            border.top.unwrap_or(Stroke::new(0.)),
             style.border_color().top.unwrap_or_default(),
         ),
         (
-            border.right.map(|v| v.0).unwrap_or(Stroke::new(0.)),
+            border.right.unwrap_or(Stroke::new(0.)),
             style.border_color().right.unwrap_or_default(),
         ),
         (
-            border.bottom.map(|v| v.0).unwrap_or(Stroke::new(0.)),
+            border.bottom.unwrap_or(Stroke::new(0.)),
             style.border_color().bottom.unwrap_or_default(),
         ),
         (
-            border.left.map(|v| v.0).unwrap_or(Stroke::new(0.)),
+            border.left.unwrap_or(Stroke::new(0.)),
             style.border_color().left.unwrap_or_default(),
         ),
     ];
@@ -1443,11 +1410,12 @@ pub(crate) fn paint_border(
     let Pct(border_progress) = style.border_progress();
 
     let half_width = borders[0].0.width / 2.0;
-    let rect = size.to_rect().inflate(-half_width, -half_width);
+    let rect = rect.inflate(-half_width, -half_width);
 
-    let radii = radii_map(border_to_radii_view(style, size), |r| {
-        (r - half_width).max(0.0)
-    });
+    let radii = radii_map(
+        border_to_radii_view(style, rect.size(), &cx.font_size_cx),
+        |r| (r - half_width).max(0.0),
+    );
 
     let mut border_path = BorderPath::new(rect, radii);
 
@@ -1479,107 +1447,6 @@ pub(crate) fn paint_border(
         }
     }
     assert!(current_path.is_empty());
-}
-
-/// Tab navigation finds the next or previous view with the `keyboard_navigatable` status in the tree.
-pub(crate) fn view_tab_navigation(
-    root_view: ViewId,
-    window_state: &mut WindowState,
-    backwards: bool,
-) {
-    let start = window_state
-        .focus
-        .unwrap_or(window_state.prev_focus.unwrap_or(root_view));
-
-    let tree_iter = |id: ViewId| {
-        if backwards {
-            view_tree_previous(root_view, id).unwrap_or_else(|| view_nested_last_child(root_view))
-        } else {
-            view_tree_next(id).unwrap_or(root_view)
-        }
-    };
-
-    let mut new_focus = tree_iter(start);
-    while new_focus != start && !window_state.focusable.contains(&new_focus) {
-        new_focus = tree_iter(new_focus);
-    }
-
-    window_state.clear_focus();
-    window_state.update_focus(new_focus, true);
-}
-
-/// Get the next item in the tree, either the first child or the next sibling of this view or of the first parent view
-fn view_tree_next(id: ViewId) -> Option<ViewId> {
-    if let Some(child) = id.children().into_iter().next() {
-        return Some(child);
-    }
-
-    let mut ancestor = id;
-    loop {
-        if let Some(next_sibling) = view_next_sibling(ancestor) {
-            return Some(next_sibling);
-        }
-        ancestor = ancestor.parent()?;
-    }
-}
-
-/// Get the id of the view after this one (but with the same parent and level of nesting)
-fn view_next_sibling(id: ViewId) -> Option<ViewId> {
-    let parent = id.parent();
-
-    let Some(parent) = parent else {
-        // We're the root, which has no sibling
-        return None;
-    };
-
-    let children = parent.children();
-    //TODO: Log a warning if the child isn't found. This shouldn't happen (error in floem if it does), but this shouldn't panic if that does happen
-    let pos = children.iter().position(|v| v == &id)?;
-
-    if pos + 1 < children.len() {
-        Some(children[pos + 1])
-    } else {
-        None
-    }
-}
-
-/// Get the next item in the tree, the deepest last child of the previous sibling of this view or the parent
-fn view_tree_previous(root_view: ViewId, id: ViewId) -> Option<ViewId> {
-    view_previous_sibling(id)
-        .map(view_nested_last_child)
-        .or_else(|| {
-            (root_view != id).then_some(
-                id.parent()
-                    .unwrap_or_else(|| view_nested_last_child(root_view)),
-            )
-        })
-}
-
-/// Get the id of the view before this one (but with the same parent and level of nesting)
-fn view_previous_sibling(id: ViewId) -> Option<ViewId> {
-    let parent = id.parent();
-
-    let Some(parent) = parent else {
-        // We're the root, which has no sibling
-        return None;
-    };
-
-    let children = parent.children();
-    let pos = children.iter().position(|v| v == &id).unwrap();
-
-    if pos > 0 {
-        Some(children[pos - 1])
-    } else {
-        None
-    }
-}
-
-fn view_nested_last_child(view: ViewId) -> ViewId {
-    let mut last_child = view;
-    while let Some(new_last_child) = last_child.children().pop() {
-        last_child = new_last_child;
-    }
-    last_child
 }
 
 // Helper functions for futzing with RoundedRectRadii. These should probably be in kurbo.

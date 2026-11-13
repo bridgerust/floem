@@ -70,7 +70,7 @@ impl KeyFrame {
         let style = style(Style::new());
         match &mut self.style {
             cs @ KeyFrameStyle::Computed => *cs = style.into(),
-            KeyFrameStyle::Style(s) => s.apply_mut(style),
+            KeyFrameStyle::Style(s) => s.apply_mut(&style),
         }
         self
     }
@@ -487,7 +487,7 @@ impl Animation {
                         *s = KeyFrameStyle::Computed;
                     }
                     (KeyFrameStyle::Style(s), KeyFrameStyle::Style(ns)) => {
-                        s.apply_mut(ns);
+                        s.apply_mut(&ns);
                     }
                 }
                 e_frame.easing = frame.easing;
@@ -937,7 +937,7 @@ impl Animation {
             }
             AnimStateCommand::Start => {
                 self.reverse_once.set(false);
-                self.folded_style.map.clear();
+                Rc::make_mut(&mut self.folded_style.map).clear();
                 self.repeat_count = 0;
                 self.state = AnimState::PassInProgress {
                     started_on: Instant::now(),
@@ -946,7 +946,7 @@ impl Animation {
             }
             AnimStateCommand::Reverse => {
                 self.reverse_once.set(true);
-                self.folded_style.map.clear();
+                Rc::make_mut(&mut self.folded_style.map).clear();
                 self.repeat_count = 0;
                 self.state = AnimState::PassInProgress {
                     started_on: Instant::now(),
@@ -1109,7 +1109,7 @@ impl Animation {
             if let Some(interpolated) =
                 (ext_prop.info().interpolate)(&*l.val.clone(), &*u.val.clone(), eased_time)
             {
-                self.folded_style.map.insert(ext_prop.key, interpolated);
+                Rc::make_mut(&mut self.folded_style.map).insert(ext_prop.key, interpolated);
             }
         }
 
@@ -1141,11 +1141,11 @@ impl Animation {
             if let Some(interpolated) =
                 (prop.info().interpolate)(&*prev.val.clone(), &*target.val.clone(), eased_time)
             {
-                self.folded_style.map.insert(prop.key, interpolated);
+                Rc::make_mut(&mut self.folded_style.map).insert(prop.key, interpolated);
             }
         }
 
-        computed_style.apply_mut(self.folded_style.clone());
+        computed_style.apply_mut(&self.folded_style);
 
         // we remove all of the props in the computed style from the cache because the computed style could change inbetween every frame.
         for computed_idx in computed_idxs {
@@ -1234,6 +1234,6 @@ impl Animation {
     /// This is used when the animation is paused or completed but should still
     /// apply its last interpolated values.
     pub fn apply_folded(&self, computed_style: &mut Style) {
-        computed_style.apply_mut(self.folded_style.clone());
+        computed_style.apply_mut(&self.folded_style);
     }
 }

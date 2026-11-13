@@ -1,12 +1,10 @@
 use floem::{
     animate::Animation,
-    peniko::{color::palette, Brush, Color},
-    reactive::{RwSignal, SignalGet, SignalUpdate},
+    prelude::*,
     style::{ScaleX, ScaleY, Style, Transition},
-    text::Weight,
-    unit::{DurationUnitExt, UnitExt},
-    views::{dyn_container, slider, svg, ButtonClass, Container, Decorators, Stack, SvgClass},
-    AnyView, IntoView,
+    text::FontWeight,
+    views::slider::Slider,
+    AnyView,
 };
 
 use crate::box_shadow;
@@ -39,7 +37,7 @@ impl IntoView for SongInfo {
 
     fn into_intermediate(self) -> Self::Intermediate {
         let song_artist = Stack::vertical((
-            self.title.style(|s| s.font_weight(Weight::MEDIUM)),
+            self.title.style(|s| s.font_weight(FontWeight::MEDIUM)),
             self.artist
                 .style(|s| s.font_size(FONT_SIZE * 0.8).color(palette::css::GRAY)),
         ))
@@ -79,7 +77,7 @@ pub fn music_player() -> impl IntoView {
 
     let now_playing = Stack::horizontal((
         svg(svg::MUSIC).style(|s| s.color(MUSIC_ICON)),
-        "Now Playing".style(|s| s.font_weight(Weight::MEDIUM)),
+        "Now Playing".style(|s| s.font_weight(FontWeight::MEDIUM)),
     ))
     .style(|s| s.gap(5).items_center());
 
@@ -88,7 +86,7 @@ pub fn music_player() -> impl IntoView {
     let play_pause_button = Container::new(
         dyn_container(move || play_pause_state.get(), PlayPause::view).class(ButtonClass),
     )
-    .on_click_stop(move |_| play_pause_state.update(PlayPause::toggle));
+    .action(move || play_pause_state.update(PlayPause::toggle));
 
     let media_buttons = Stack::horizontal((
         Container::new(svg(svg::BACKWARD)).class(ButtonClass),
@@ -96,7 +94,7 @@ pub fn music_player() -> impl IntoView {
         Container::new(svg(svg::FORWARD)).class(ButtonClass),
     ))
     .style(|s| {
-        s.align_self(Some(floem::taffy::AlignItems::Center))
+        s.align_self(floem::taffy::AlignItems::Center)
             .items_center()
             .gap(20)
             .class(SvgClass, |s| s.color(MUSIC_ICON))
@@ -105,14 +103,14 @@ pub fn music_player() -> impl IntoView {
     let card = Stack::vertical((
         now_playing,
         dyn_container(move || song_info.get(), |info| info),
-        slider::slider(move || 40.pct())
+        Slider::new(move || 40.pct())
             .style(|s| s.width_full())
             .slider_style(|s| {
                 s.bar_height(3)
                     .accent_bar_height(3.)
                     .bar_color(SLIDER)
                     .accent_bar_color(ICON)
-                    .handle_color(Brush::Solid(palette::css::TRANSPARENT))
+                    .handle_color(css::TRANSPARENT)
                     .handle_radius(0)
             }),
         media_buttons,

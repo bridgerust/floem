@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use floem_reactive::SignalTracker;
 use floem_renderer::{ExternalTexture, Renderer};
@@ -74,7 +74,7 @@ impl View for VideoFrame {
         let tracker = self.tracker.as_ref().unwrap();
         tracker.track(|| {
             if let Some(f) = frame_fn() {
-                let rect = id.get_content_rect();
+                let rect = id.get_content_rect_local();
                 cx.draw_external_texture(
                     ExternalTexture {
                         id: texture_id,

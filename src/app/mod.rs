@@ -2,11 +2,16 @@
 pub(crate) mod delegate;
 pub(crate) mod handle;
 
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::RefCell,
+    rc::Rc,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use crate::platform::menu_types::MenuId;
 #[cfg(feature = "crossbeam")]
 use crossbeam::channel::{Receiver, Sender, unbounded as channel};
+use peniko::kurbo::Point;
 #[cfg(not(feature = "crossbeam"))]
 use std::sync::mpsc::{Receiver, Sender, channel};
 
@@ -32,6 +37,7 @@ use handle::ApplicationHandle;
 pub(crate) type AppEventCallback = dyn Fn(AppEvent);
 
 static EVENT_LOOP_PROXY: Mutex<Option<(EventLoopProxy, Sender<UserEvent>)>> = Mutex::new(None);
+static APP_UPDATE_POSTED: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
     pub(crate) static APP_UPDATE_EVENTS: RefCell<Vec<AppUpdateEvent>> = Default::default();
@@ -101,6 +107,15 @@ pub enum AppEvent {
     Reopen { has_visible_windows: bool },
 }
 
+pub(crate) struct MenuWrapper(pub(crate) muda::Menu);
+// SAFETY: these unsafe wappers are needed so that we can send the muda memu.
+// The muda menu internally uses RC on a String ID and it's Vec of children.
+// This unsafe wrapper is memory safe but the race condition could potentially (unlikely)
+// lead to bad reference counts and leaked memory.
+// I think this is fine for this case.
+unsafe impl Send for MenuWrapper {}
+unsafe impl Sync for MenuWrapper {}
+
 pub(crate) enum UserEvent {
     AppUpdate,
     Idle,
@@ -109,8 +124,14 @@ pub(crate) enum UserEvent {
     Reopen {
         has_visible_windows: bool,
     },
+    #[cfg(not(feature = "skia"))]
     GpuResourcesUpdate {
         window_id: WindowId,
+    },
+    ShowContextMenu {
+        window_id: WindowId,
+        menu: MenuWrapper,
+        pos: Option<Point>,
     },
 }
 
@@ -120,6 +141,9 @@ pub(crate) enum AppUpdateEvent {
         window_creation: WindowCreation,
     },
     CloseWindow {
+        window_id: WindowId,
+    },
+    RequestCloseWindow {
         window_id: WindowId,
     },
     CaptureWindow {
@@ -133,6 +157,10 @@ pub(crate) enum AppUpdateEvent {
     RequestTimer {
         timer: Timer,
     },
+    RequestAnimationTimer {
+        timer: Timer,
+        window_id: WindowId,
+    },
     CancelTimer {
         timer: TimerToken,
     },
@@ -142,13 +170,34 @@ pub(crate) enum AppUpdateEvent {
     ThemeChanged {
         theme: Theme,
     },
+    AnimationFrame(bool, WindowId),
 }
 
 pub(crate) fn add_app_update_event(event: AppUpdateEvent) {
     APP_UPDATE_EVENTS.with(|events| {
         events.borrow_mut().push(event);
     });
-    Application::send_proxy_event(UserEvent::AppUpdate);
+    Application::request_update();
+}
+
+/// Drain the pending app update events and return how many of them were
+/// `CloseWindow` for the given `window_id`.  This is intended for testing
+/// the `handle_default_behaviors` close logic.
+#[doc(hidden)]
+pub fn take_close_window_event_count(window_id: WindowId) -> usize {
+    APP_UPDATE_EVENTS.with(|events| {
+        let mut events = events.borrow_mut();
+        let count = events
+            .iter()
+            .filter(
+                |e| matches!(e, AppUpdateEvent::CloseWindow { window_id: id } if *id == window_id),
+            )
+            .count();
+        events.retain(
+            |e| !matches!(e, AppUpdateEvent::CloseWindow { window_id: id } if *id == window_id),
+        );
+        count
+    })
 }
 
 /// Floem top level application
@@ -187,9 +236,6 @@ impl ApplicationHandler for Application {
         self.handle.handle_timer(event_loop);
         self.handle
             .handle_window_event(window_id, event, event_loop);
-        if Runtime::has_pending_work() {
-            Runtime::drain_pending_work();
-        }
     }
 
     fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
@@ -197,9 +243,8 @@ impl ApplicationHandler for Application {
         for event in self.receiver.try_iter() {
             self.handle.handle_user_event(event_loop, event);
         }
-        self.handle.handle_updates_for_all_windows();
         if Runtime::has_pending_work() {
-            Runtime::drain_pending_work();
+            self.handle.request_update();
         }
     }
 
@@ -210,9 +255,10 @@ impl ApplicationHandler for Application {
     }
 
     fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
+        self.handle.flush_deferred_context_menus();
         self.handle.handle_timer(event_loop);
         if Runtime::has_pending_work() {
-            Runtime::drain_pending_work();
+            self.handle.request_update();
         }
     }
 }
@@ -290,12 +336,23 @@ impl Application {
             proxy.wake_up();
         }
     }
+
+    pub(crate) fn request_update() {
+        if !APP_UPDATE_POSTED.swap(true, Ordering::AcqRel) {
+            Self::send_proxy_event(UserEvent::AppUpdate);
+        }
+    }
+
+    pub(crate) fn clear_update_posted() {
+        APP_UPDATE_POSTED.store(false, Ordering::Release);
+    }
 }
 
-/// Initiates the application shutdown process.
+/// Immediately terminates the application.
 ///
-/// This function sends a `QuitApp` event to the application's event loop,
-/// triggering the application to close gracefully.
+/// This is an unconditional exit: no windows receive a `CloseRequested` event
+/// and no `WindowCloseRequested` handlers are consulted. The event loop exits
+/// immediately.
 pub fn quit_app() {
     Application::send_proxy_event(UserEvent::QuitApp);
 }

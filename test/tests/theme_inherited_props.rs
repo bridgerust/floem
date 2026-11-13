@@ -18,23 +18,10 @@
 //!    even if the required context values would be available.
 
 use floem::prelude::*;
-use floem::style::{FontSize, Style};
-use floem::views::toggle_button;
+use floem::style::FontSize;
+use floem::views::ToggleButton;
 use floem_test::prelude::*;
 use serial_test::serial;
-
-/// Helper extension trait for testing with FontSize context.
-trait FontSizeContextExt {
-    fn with_font_size_context(self, f: impl Fn(Self, &Option<f32>) -> Self + 'static) -> Self
-    where
-        Self: Sized;
-}
-
-impl FontSizeContextExt for Style {
-    fn with_font_size_context(self, f: impl Fn(Self, &Option<f32>) -> Self + 'static) -> Self {
-        self.with_context::<FontSize>(f)
-    }
-}
 
 // =============================================================================
 // Tests for FontSize from default theme
@@ -50,16 +37,15 @@ impl FontSizeContextExt for Style {
 #[test]
 #[serial]
 fn test_font_size_from_default_theme() {
+    let root = TestRoot::new();
     // View that uses font_size from context to set its height
     let view = Empty::new().style(|s| {
-        s.width(100.0).with_font_size_context(|s, fs| {
-            // Should get Some(14.0) from default theme
-            s.apply_opt(*fs, |s, fs| s.height(fs * 2.0))
-        })
+        s.width(100.0)
+            .with::<FontSize>(|s, fs| s.height(fs.def(|fs| fs * 2.0)))
     });
     let id = view.view_id();
 
-    let mut harness = HeadlessHarness::new_with_size(view, 200.0, 200.0);
+    let mut harness = HeadlessHarness::new_with_size(root, view, 200.0, 200.0);
     harness.rebuild();
 
     let layout = id.get_layout().expect("Layout should exist");
@@ -94,17 +80,18 @@ fn test_font_size_from_default_theme() {
 #[test]
 #[serial]
 fn test_font_size_from_explicit_parent() {
+    let root = TestRoot::new();
     // Child uses font_size from context
     let child = Empty::new().style(|s| {
         s.width(50.0)
-            .with_font_size_context(|s, fs| s.apply_opt(*fs, |s, fs| s.height(fs * 2.0)))
+            .with::<FontSize>(|s, fs| s.height(fs.def(|fs| fs * 2.0)))
     });
     let child_id = child.view_id();
 
     // Parent explicitly sets font_size
     let parent = Container::new(child).style(|s| s.size(200.0, 200.0).font_size(20.0));
 
-    let mut harness = HeadlessHarness::new_with_size(parent, 200.0, 200.0);
+    let mut harness = HeadlessHarness::new_with_size(root, parent, 200.0, 200.0);
     harness.rebuild();
 
     let layout = child_id.get_layout().expect("Layout should exist");
@@ -126,10 +113,11 @@ fn test_font_size_from_explicit_parent() {
 #[test]
 #[serial]
 fn test_font_size_deeply_nested() {
+    let root = TestRoot::new();
     // Grandchild uses font_size from context
     let grandchild = Empty::new().style(|s| {
         s.width(25.0)
-            .with_font_size_context(|s, fs| s.apply_opt(*fs, |s, fs| s.height(fs * 1.5)))
+            .with::<FontSize>(|s, fs| s.height(fs.def(|fs| fs * 1.5)))
     });
     let grandchild_id = grandchild.view_id();
 
@@ -138,7 +126,7 @@ fn test_font_size_deeply_nested() {
     // Grandparent sets font_size
     let parent = Container::new(child).style(|s| s.size(200.0, 200.0).font_size(16.0));
 
-    let mut harness = HeadlessHarness::new_with_size(parent, 200.0, 200.0);
+    let mut harness = HeadlessHarness::new_with_size(root, parent, 200.0, 200.0);
     harness.rebuild();
 
     let layout = grandchild_id.get_layout().expect("Layout should exist");
@@ -168,10 +156,11 @@ fn test_font_size_deeply_nested() {
 #[test]
 #[serial]
 fn test_toggle_button_height_from_theme_font_size() {
-    let toggle = toggle_button(|| true).style(|s| s.width(50.0));
+    let root = TestRoot::new();
+    let toggle = ToggleButton::new(|| true).style(|s| s.width(50.0));
     let toggle_id = toggle.view_id();
 
-    let mut harness = HeadlessHarness::new_with_size(toggle, 200.0, 200.0);
+    let mut harness = HeadlessHarness::new_with_size(root, toggle, 200.0, 200.0);
     harness.rebuild();
 
     let layout = toggle_id.get_layout().expect("Layout should exist");
@@ -208,13 +197,14 @@ fn test_toggle_button_height_from_theme_font_size() {
 #[test]
 #[serial]
 fn test_toggle_button_height_with_explicit_font_size() {
-    let toggle = toggle_button(|| true);
+    let root = TestRoot::new();
+    let toggle = ToggleButton::new(|| true);
     let toggle_id = toggle.view_id();
 
     // Wrap in a container that sets font_size explicitly
     let container = Container::new(toggle).style(|s| s.size(200.0, 200.0).font_size(16.0));
 
-    let mut harness = HeadlessHarness::new_with_size(container, 200.0, 200.0);
+    let mut harness = HeadlessHarness::new_with_size(root, container, 200.0, 200.0);
     harness.rebuild();
 
     let layout = toggle_id.get_layout().expect("Layout should exist");
@@ -239,9 +229,10 @@ fn test_toggle_button_height_with_explicit_font_size() {
 #[test]
 #[serial]
 fn test_toggle_button_in_grid() {
+    let root = TestRoot::new();
     use floem::taffy::prelude::{auto, fr};
 
-    let toggle = toggle_button(|| true);
+    let toggle = ToggleButton::new(|| true);
     let toggle_id = toggle.view_id();
 
     // Simulate the widget-gallery form layout
@@ -256,7 +247,7 @@ fn test_toggle_button_in_grid() {
         })
         .style(|s| s.size(400.0, 200.0));
 
-    let mut harness = HeadlessHarness::new_with_size(grid, 400.0, 200.0);
+    let mut harness = HeadlessHarness::new_with_size(root, grid, 400.0, 200.0);
     harness.rebuild();
 
     let layout = toggle_id.get_layout().expect("Layout should exist");
@@ -279,9 +270,10 @@ fn test_toggle_button_in_grid() {
 #[test]
 #[serial]
 fn test_toggle_button_in_grid_with_font_size() {
+    let root = TestRoot::new();
     use floem::taffy::prelude::{auto, fr};
 
-    let toggle = toggle_button(|| true);
+    let toggle = ToggleButton::new(|| true);
     let toggle_id = toggle.view_id();
 
     // Grid with explicit font_size
@@ -297,7 +289,7 @@ fn test_toggle_button_in_grid_with_font_size() {
         })
         .style(|s| s.size(400.0, 200.0));
 
-    let mut harness = HeadlessHarness::new_with_size(grid, 400.0, 200.0);
+    let mut harness = HeadlessHarness::new_with_size(root, grid, 400.0, 200.0);
     harness.rebuild();
 
     let layout = toggle_id.get_layout().expect("Layout should exist");
@@ -325,21 +317,24 @@ fn test_toggle_button_in_grid_with_font_size() {
 #[test]
 #[serial]
 fn test_inherited_context_contents() {
+    let root = TestRoot::new();
     use std::cell::Cell;
     use std::rc::Rc;
 
-    let received_font_size: Rc<Cell<Option<f32>>> = Rc::new(Cell::new(None));
+    let received_font_size: Rc<Cell<Option<f64>>> = Rc::new(Cell::new(None));
     let captured = received_font_size.clone();
 
-    let view = Empty::new().style(move |s| {
+    let view = Label::new("Test").style(move |s| {
         let captured = captured.clone();
-        s.size(100.0, 100.0).with_font_size_context(move |s, fs| {
-            captured.set(*fs);
-            s
+        s.size(100.0, 100.0).with::<FontSize>(move |s, fs| {
+            s.font_size(fs.def(move |fs| {
+                captured.set(Some(fs));
+                fs
+            }))
         })
     });
 
-    let mut harness = HeadlessHarness::new_with_size(view, 200.0, 200.0);
+    let mut harness = HeadlessHarness::new_with_size(root, view, 200.0, 200.0);
     harness.rebuild();
 
     let fs = received_font_size.get();
@@ -364,23 +359,26 @@ fn test_inherited_context_contents() {
 #[test]
 #[serial]
 fn test_with_context_works_when_font_size_is_explicit() {
+    let root = TestRoot::new();
     use std::cell::Cell;
     use std::rc::Rc;
 
-    let received_font_size: Rc<Cell<Option<f32>>> = Rc::new(Cell::new(None));
+    let received_font_size: Rc<Cell<Option<f64>>> = Rc::new(Cell::new(None));
     let captured = received_font_size.clone();
 
-    let child = Empty::new().style(move |s| {
+    let child = Label::new("Test").style(move |s| {
         let captured = captured.clone();
-        s.size(50.0, 50.0).with_font_size_context(move |s, fs| {
-            captured.set(*fs);
-            s
+        s.size(50.0, 50.0).with::<FontSize>(move |s, fs| {
+            s.font_size(fs.def(move |fs| {
+                captured.set(Some(fs));
+                fs
+            }))
         })
     });
 
     let parent = Container::new(child).style(|s| s.size(200.0, 200.0).font_size(18.0));
 
-    let mut harness = HeadlessHarness::new_with_size(parent, 200.0, 200.0);
+    let mut harness = HeadlessHarness::new_with_size(root, parent, 200.0, 200.0);
     harness.rebuild();
 
     let fs = received_font_size.get();
@@ -419,6 +417,7 @@ fn test_with_context_works_when_font_size_is_explicit() {
 #[test]
 #[serial]
 fn test_class_style_context_mappings_stripped() {
+    let root = TestRoot::new();
     // Create a custom class and define a style with with_context for it
     floem::style_class!(TestContextClass);
 
@@ -435,11 +434,11 @@ fn test_class_style_context_mappings_stripped() {
             .font_size(20.0) // Set font_size in context
             .class(TestContextClass, |s| {
                 // This with_context should set height based on font_size
-                s.with_font_size_context(|s, fs| s.apply_opt(*fs, |s, fs| s.height(fs * 2.0)))
+                s.with::<FontSize>(|s, fs| s.height(fs.def(|fs| fs * 2.0)))
             })
     });
 
-    let mut harness = HeadlessHarness::new_with_size(parent, 200.0, 200.0);
+    let mut harness = HeadlessHarness::new_with_size(root, parent, 200.0, 200.0);
     harness.rebuild();
 
     let layout = child_id.get_layout().expect("Layout should exist");
@@ -465,17 +464,18 @@ fn test_class_style_context_mappings_stripped() {
 #[test]
 #[serial]
 fn test_view_own_context_mappings_work() {
+    let root = TestRoot::new();
     // View with its own with_context (not from a class)
     let child = Empty::new().style(|s| {
         s.width(100.0)
-            .with_font_size_context(|s, fs| s.apply_opt(*fs, |s, fs| s.height(fs * 2.0)))
+            .with::<FontSize>(|s, fs| s.height(fs.def(|fs| fs * 2.0)))
     });
     let child_id = child.view_id();
 
     // Parent provides the font_size context
     let parent = Container::new(child).style(|s| s.size(200.0, 200.0).font_size(20.0));
 
-    let mut harness = HeadlessHarness::new_with_size(parent, 200.0, 200.0);
+    let mut harness = HeadlessHarness::new_with_size(root, parent, 200.0, 200.0);
     harness.rebuild();
 
     let layout = child_id.get_layout().expect("Layout should exist");

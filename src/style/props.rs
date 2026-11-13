@@ -10,12 +10,9 @@
 
 use std::any::{Any, type_name};
 use std::fmt::{self, Debug};
-use std::hash::{BuildHasherDefault, Hash, Hasher};
+use std::hash::{Hash, Hasher};
 use std::ptr;
 use std::rc::Rc;
-
-use imbl::shared_ptr::DefaultSharedPtr;
-use rustc_hash::FxHasher;
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
@@ -28,7 +25,7 @@ use crate::views::Label;
 use super::Style;
 use super::selectors::StyleSelectors;
 use super::transition::TransitionState;
-use super::values::{CombineResult, StyleMapValue, StylePropValue, StyleValue};
+use super::values::{StyleMapValue, StylePropValue, StyleValue};
 
 // ============================================================================
 // StyleClass
@@ -39,6 +36,15 @@ pub trait StyleClass: Default + Copy + 'static {
     fn class_ref() -> StyleClassRef {
         StyleClassRef { key: Self::key() }
     }
+}
+
+pub trait StyleDebugGroup: Default + Copy + 'static {
+    fn key() -> StyleKey;
+    fn group_ref() -> StyleDebugGroupRef {
+        StyleDebugGroupRef { key: Self::key() }
+    }
+    fn member_props() -> Vec<StyleKey>;
+    fn debug_view(style: &Style) -> Option<Box<dyn View>>;
 }
 
 #[derive(Debug, Clone)]
@@ -56,6 +62,34 @@ impl StyleClassInfo {
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct StyleClassRef {
+    pub key: StyleKey,
+}
+
+#[derive(Debug, Clone)]
+pub struct StyleDebugGroupInfo {
+    pub(crate) name: fn() -> &'static str,
+    pub(crate) inherited: bool,
+    pub(crate) member_props: fn() -> Vec<StyleKey>,
+    pub(crate) debug_view: fn(style: &Style) -> Option<Box<dyn View>>,
+}
+
+impl StyleDebugGroupInfo {
+    pub const fn new<Name>(
+        inherited: bool,
+        member_props: fn() -> Vec<StyleKey>,
+        debug_view: fn(style: &Style) -> Option<Box<dyn View>>,
+    ) -> Self {
+        StyleDebugGroupInfo {
+            name: || std::any::type_name::<Name>(),
+            inherited,
+            member_props,
+            debug_view,
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct StyleDebugGroupRef {
     pub key: StyleKey,
 }
 
@@ -88,6 +122,43 @@ macro_rules! style_class {
     };
 }
 
+#[macro_export]
+macro_rules! style_debug_group {
+    ($(#[$meta:meta])* $v:vis $name:ident $(, inherited = $inherited:ident)?, members = [$($prop:ty),* $(,)?], view = $view:path) => {
+        $(#[$meta])*
+        #[derive(Default, Copy, Clone)]
+        $v struct $name;
+
+        impl $crate::style::StyleDebugGroup for $name {
+            fn key() -> $crate::style::StyleKey {
+                static INFO: $crate::style::StyleKeyInfo =
+                    $crate::style::StyleKeyInfo::DebugGroup(
+                        $crate::style::StyleDebugGroupInfo::new::<$name>(
+                            style_debug_group!(@inherited $($inherited)?),
+                            || vec![$(<$prop as $crate::style::StyleProp>::key()),*],
+                            $view,
+                        )
+                    );
+                $crate::style::StyleKey { info: &INFO }
+            }
+
+            fn member_props() -> Vec<$crate::style::StyleKey> {
+                vec![$(<$prop as $crate::style::StyleProp>::key()),*]
+            }
+
+            fn debug_view(style: &$crate::style::Style) -> Option<Box<dyn $crate::view::View>> {
+                $view(style)
+            }
+        }
+    };
+    (@inherited inherited) => {
+        true
+    };
+    (@inherited) => {
+        false
+    };
+}
+
 // ============================================================================
 // StyleProp
 // ============================================================================
@@ -104,13 +175,13 @@ pub trait StyleProp: Default + Copy + 'static {
 pub(crate) type InterpolateFn =
     fn(val1: &dyn Any, val2: &dyn Any, time: f64) -> Option<Rc<dyn Any>>;
 
-pub(crate) type CombineFn = fn(val1: Rc<dyn Any>, val2: Rc<dyn Any>) -> Rc<dyn Any>;
-
 /// Function pointer type for computing content hash of a style value.
 pub(crate) type HashAnyFn = fn(val: &dyn Any) -> u64;
 
 /// Function pointer type for comparing two style values for equality.
 pub(crate) type EqAnyFn = fn(val1: &dyn Any, val2: &dyn Any) -> bool;
+/// Function pointer type for resolving a stored inherited property into a concrete value.
+pub(crate) type ResolveInheritedAnyFn = fn(val: &dyn Any, style: &Style) -> Rc<dyn Any>;
 
 #[derive(Debug)]
 pub struct StylePropInfo {
@@ -121,12 +192,13 @@ pub struct StylePropInfo {
     pub(crate) interpolate: InterpolateFn,
     pub(crate) debug_any: fn(val: &dyn Any) -> String,
     pub(crate) debug_view: fn(val: &dyn Any) -> Option<Box<dyn View>>,
-    pub(crate) combine: CombineFn,
     pub(crate) transition_key: StyleKey,
     /// Computes a content-based hash for a style value.
     pub(crate) hash_any: HashAnyFn,
     /// Compares two style values for equality.
     pub(crate) eq_any: EqAnyFn,
+    /// Resolves a stored property value for inheritance propagation.
+    pub(crate) resolve_inherited_any: ResolveInheritedAnyFn,
 }
 
 impl StylePropInfo {
@@ -143,7 +215,7 @@ impl StylePropInfo {
                 if let Some(v) = val.downcast_ref::<StyleMapValue<T>>() {
                     match v {
                         StyleMapValue::Val(v) | StyleMapValue::Animated(v) => format!("{v:?}"),
-
+                        StyleMapValue::Context(_) => "Context(..)".to_owned(),
                         StyleMapValue::Unset => "Unset".to_owned(),
                     }
                 } else {
@@ -183,7 +255,7 @@ impl StylePropInfo {
                 if let Some(v) = val.downcast_ref::<StyleMapValue<T>>() {
                     match v {
                         StyleMapValue::Val(v) | StyleMapValue::Animated(v) => v.debug_view(),
-
+                        StyleMapValue::Context(_) => Some(Label::new("Context(..)").into_any()),
                         StyleMapValue::Unset => Some(Label::new("Unset").into_any()),
                     }
                 } else {
@@ -194,45 +266,12 @@ impl StylePropInfo {
                     )
                 }
             },
-            combine: |val1, val2| {
-                if let (Some(v1), Some(v2)) = (
-                    val1.downcast_ref::<StyleMapValue<T>>(),
-                    val2.downcast_ref::<StyleMapValue<T>>(),
-                ) {
-                    match (v1, v2) {
-                        (StyleMapValue::Val(a), StyleMapValue::Val(b)) => match a.combine(b) {
-                            CombineResult::Other => val2,
-                            CombineResult::New(result) => {
-                                Rc::new(StyleMapValue::Val(result)) as Rc<dyn Any>
-                            }
-                        },
-                        (StyleMapValue::Unset, _) => val2,
-                        (_, StyleMapValue::Unset) => val2,
-                        (
-                            StyleMapValue::Val(a) | StyleMapValue::Animated(a),
-                            StyleMapValue::Animated(b) | StyleMapValue::Val(b),
-                        ) => match a.combine(b) {
-                            CombineResult::Other => val2,
-                            CombineResult::New(result) => {
-                                Rc::new(StyleMapValue::Animated(result)) as Rc<dyn Any>
-                            }
-                        },
-                    }
-                } else {
-                    panic!(
-                        "expected type {} for property {}. Got typeids {:?} and {:?}",
-                        type_name::<StyleMapValue<T>>(),
-                        std::any::type_name::<Name>(),
-                        val1.type_id(),
-                        val2.type_id()
-                    )
-                }
-            },
             transition_key,
             hash_any: |val| {
                 if let Some(v) = val.downcast_ref::<StyleMapValue<T>>() {
                     match v {
                         StyleMapValue::Val(v) | StyleMapValue::Animated(v) => v.content_hash(),
+                        StyleMapValue::Context(_) => 1,
                         StyleMapValue::Unset => 0, // Stable hash for unset
                     }
                 } else {
@@ -252,10 +291,7 @@ impl StylePropInfo {
                         (
                             StyleMapValue::Val(a) | StyleMapValue::Animated(a),
                             StyleMapValue::Val(b) | StyleMapValue::Animated(b),
-                        ) => {
-                            // Compare by content hash since we don't have PartialEq
-                            a.content_hash() == b.content_hash()
-                        }
+                        ) => a == b,
                         (StyleMapValue::Unset, StyleMapValue::Unset) => true,
                         _ => false,
                     }
@@ -268,6 +304,24 @@ impl StylePropInfo {
                         val2.type_id()
                     )
                 }
+            },
+            resolve_inherited_any: |val, style| {
+                let resolved = match val.downcast_ref::<StyleMapValue<T>>().unwrap_or_else(|| {
+                    panic!(
+                        "expected type {} for property {}",
+                        type_name::<T>(),
+                        std::any::type_name::<Name>(),
+                    )
+                }) {
+                    StyleMapValue::Val(value) | StyleMapValue::Animated(value) => {
+                        StyleMapValue::Val(value.clone())
+                    }
+                    StyleMapValue::Context(context_value) => {
+                        StyleMapValue::Val(context_value.resolve(style))
+                    }
+                    StyleMapValue::Unset => StyleMapValue::Unset,
+                };
+                Rc::new(resolved)
             },
         }
     }
@@ -301,7 +355,6 @@ pub trait StylePropReader {
     fn read(
         state: &mut Self::State,
         style: &Style,
-        fallback: &Style,
         now: &Instant,
         request_transition: &mut bool,
     ) -> bool;
@@ -318,7 +371,6 @@ impl<P: StyleProp> StylePropReader for P {
     fn read(
         state: &mut Self::State,
         style: &Style,
-        fallback: &Style,
         now: &Instant,
         request_transition: &mut bool,
     ) -> bool {
@@ -326,22 +378,19 @@ impl<P: StyleProp> StylePropReader for P {
         let style_value = style.get_prop_style_value::<P>();
         let mut prop_animated = false;
         let new = match style_value {
+            StyleValue::Context(_) => {
+                unreachable!("context values should resolve during property reads")
+            }
             StyleValue::Animated(val) => {
                 *request_transition = true;
                 prop_animated = true;
                 val
             }
             StyleValue::Val(val) => val,
-            StyleValue::Unset | StyleValue::Base => fallback
-                .get_prop::<P>()
-                .unwrap_or_else(|| P::default_value()),
+            StyleValue::Unset | StyleValue::Base => P::default_value(),
         };
         // set the transition state to the transition if one is found
-        state.1.read(
-            style
-                .get_transition::<P>()
-                .or_else(|| fallback.get_transition::<P>()),
-        );
+        state.1.read(style.get_transition::<P>());
 
         // there is a previously stored value in state.0. if the values are different, a transition should be started if there is one
         let changed = new != state.0;
@@ -370,11 +419,10 @@ impl<P: StyleProp> StylePropReader for Option<P> {
     fn read(
         state: &mut Self::State,
         style: &Style,
-        fallback: &Style,
         _now: &Instant,
         _transition: &mut bool,
     ) -> bool {
-        let new = style.get_prop::<P>().or_else(|| fallback.get_prop::<P>());
+        let new = style.get_prop::<P>();
         let changed = new != *state;
         *state = new;
         changed
@@ -403,14 +451,8 @@ impl<R: StylePropReader> Debug for ExtractorField<R> {
 }
 
 impl<R: StylePropReader> ExtractorField<R> {
-    pub fn read(
-        &mut self,
-        style: &Style,
-        fallback: &Style,
-        now: &Instant,
-        request_transition: &mut bool,
-    ) -> bool {
-        R::read(&mut self.state, style, fallback, now, request_transition)
+    pub fn read(&mut self, style: &Style, now: &Instant, request_transition: &mut bool) -> bool {
+        R::read(&mut self.state, style, now, request_transition)
     }
     pub fn get(&self) -> R::Type {
         R::get(&self.state)
@@ -496,20 +538,45 @@ macro_rules! prop_extractor {
         impl $name {
             #[allow(dead_code)]
             $vis fn read_style(&mut self, cx: &mut $crate::context::StyleCx, style: &$crate::style::Style) -> bool {
+                self.read_style_for(cx, style, cx.current_view().get_element_id())
+            }
+
+            #[allow(dead_code)]
+            $vis fn read_style_for(
+                &mut self,
+                cx: &mut $crate::context::StyleCx,
+                style: &$crate::style::Style,
+                target: impl Into<$crate::ElementId>,
+            ) -> bool {
                 let mut transition = false;
-                let changed = false $(| self.$prop.read(style, style, &cx.now(), &mut transition))*;
+                let changed = false $(
+                    | self.$prop.read(style, &cx.now(), &mut transition)
+                )*;
                 if transition {
-                    cx.request_transition();
+                    cx.request_transition_for(target);
                 }
                 changed
             }
 
            #[allow(dead_code)]
             $vis fn read(&mut self, cx: &mut $crate::context::StyleCx) -> bool {
+                self.read_for(cx, cx.current_view().get_element_id())
+            }
+
+           #[allow(dead_code)]
+            $vis fn read_for(
+                &mut self,
+                cx: &mut $crate::context::StyleCx,
+                target: impl Into<$crate::ElementId>,
+            ) -> bool {
                 let mut transition = false;
-                let changed = self.read_explicit(&cx.direct_style(), &cx.indirect_style(), &cx.now(), &mut transition);
+                let changed = self.read_explicit(
+                    &cx.direct_style(),
+                    &cx.now(),
+                    &mut transition,
+                );
                 if transition {
-                    cx.request_transition();
+                    cx.request_transition_for(target);
                 }
                 changed
             }
@@ -518,14 +585,13 @@ macro_rules! prop_extractor {
             $vis fn read_explicit(
                 &mut self,
                 style: &$crate::style::Style,
-                fallback: &$crate::style::Style,
                 #[cfg(not(target_arch = "wasm32"))]
                 now: &std::time::Instant,
                 #[cfg(target_arch = "wasm32")]
                 now: &web_time::Instant,
                 request_transition: &mut bool
             ) -> bool {
-                false $(| self.$prop.read(style, fallback, now, request_transition))*
+                false $(| self.$prop.read(style, now, request_transition))*
             }
 
             $($prop_vis fn $prop(&self) -> <$reader as $crate::style::StylePropReader>::Type
@@ -556,11 +622,16 @@ pub enum StyleKeyInfo {
     Prop(StylePropInfo),
     Selector(StyleSelectors),
     Class(StyleClassInfo),
-    /// Storage for context mapping closures.
-    ContextMappings,
+    DebugGroup(StyleDebugGroupInfo),
+    DeferredEffects,
+    /// Storage for parameterized structural selectors (`:first-child`, `:nth-child(...)`, etc.).
+    StructuralSelectors,
+    /// Storage for parameterized responsive selectors (`min/max/range` window width).
+    ResponsiveSelectors,
 }
 
-pub(crate) static CONTEXT_MAPPINGS_INFO: StyleKeyInfo = StyleKeyInfo::ContextMappings;
+pub(crate) static STRUCTURAL_SELECTORS_INFO: StyleKeyInfo = StyleKeyInfo::StructuralSelectors;
+pub(crate) static RESPONSIVE_SELECTORS_INFO: StyleKeyInfo = StyleKeyInfo::ResponsiveSelectors;
 
 #[derive(Copy, Clone)]
 pub struct StyleKey {
@@ -571,7 +642,11 @@ impl StyleKey {
     pub(crate) fn debug_any(&self, value: &dyn Any) -> String {
         match self.info {
             StyleKeyInfo::Selector(selectors) => selectors.debug_string(),
-            StyleKeyInfo::Transition | StyleKeyInfo::ContextMappings => String::new(),
+            StyleKeyInfo::Transition
+            | StyleKeyInfo::DebugGroup(_)
+            | StyleKeyInfo::DeferredEffects
+            | StyleKeyInfo::StructuralSelectors
+            | StyleKeyInfo::ResponsiveSelectors => String::new(),
             StyleKeyInfo::Class(info) => (info.name)().to_string(),
             StyleKeyInfo::Prop(v) => (v.debug_any)(value),
         }
@@ -580,8 +655,11 @@ impl StyleKey {
         match self.info {
             StyleKeyInfo::Selector(..)
             | StyleKeyInfo::Transition
-            | StyleKeyInfo::ContextMappings => false,
+            | StyleKeyInfo::DeferredEffects
+            | StyleKeyInfo::StructuralSelectors
+            | StyleKeyInfo::ResponsiveSelectors => false,
             StyleKeyInfo::Class(..) => true,
+            StyleKeyInfo::DebugGroup(v) => v.inherited,
             StyleKeyInfo::Prop(v) => v.inherited,
         }
     }
@@ -608,16 +686,12 @@ impl Debug for StyleKey {
                 write!(f, "selectors: {}", selectors.debug_string())
             }
             StyleKeyInfo::Transition => write!(f, "transition"),
-            StyleKeyInfo::ContextMappings => write!(f, "ContextMappings"),
+            StyleKeyInfo::DeferredEffects => write!(f, "DeferredEffects"),
+            StyleKeyInfo::StructuralSelectors => write!(f, "StructuralSelectors"),
+            StyleKeyInfo::ResponsiveSelectors => write!(f, "ResponsiveSelectors"),
             StyleKeyInfo::Class(v) => write!(f, "{}", (v.name)()),
+            StyleKeyInfo::DebugGroup(v) => write!(f, "{}", (v.name)()),
             StyleKeyInfo::Prop(v) => write!(f, "{}", (v.name)()),
         }
     }
 }
-
-// ============================================================================
-// ImHashMap
-// ============================================================================
-
-pub(crate) type ImHashMap<K, V> =
-    imbl::GenericHashMap<K, V, BuildHasherDefault<FxHasher>, DefaultSharedPtr>;

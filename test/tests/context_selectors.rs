@@ -13,7 +13,7 @@
 use floem::peniko::{Brush, Color};
 use floem::prelude::*;
 use floem::prop;
-use floem::style::{Background, Style, StyleSelector};
+use floem::style::{Background, ContextRef, ContextValue, ExprStyle, Style, StyleSelector};
 use floem_test::prelude::*;
 use serial_test::serial;
 
@@ -47,14 +47,44 @@ impl floem::style::StylePropValue for TestTheme {
 
 /// Helper extension trait for using the test theme
 trait TestThemeExt {
-    fn with_test_theme(self, f: impl Fn(Self, &TestTheme) -> Self + 'static) -> Self
+    fn with_test_theme(
+        self,
+        f: impl Fn(ExprStyle, ContextRef<TestThemeProp>) -> ExprStyle + 'static,
+    ) -> Self
     where
         Self: Sized;
 }
 
 impl TestThemeExt for Style {
-    fn with_test_theme(self, f: impl Fn(Self, &TestTheme) -> Self + 'static) -> Self {
-        self.with_context::<TestThemeProp>(f)
+    fn with_test_theme(
+        self,
+        f: impl Fn(ExprStyle, ContextRef<TestThemeProp>) -> ExprStyle + 'static,
+    ) -> Self {
+        self.with::<TestThemeProp>(f)
+    }
+}
+
+impl TestThemeExt for ExprStyle {
+    fn with_test_theme(
+        self,
+        f: impl Fn(ExprStyle, ContextRef<TestThemeProp>) -> ExprStyle + 'static,
+    ) -> Self {
+        self.with::<TestThemeProp>(f)
+    }
+}
+
+trait TestThemeRefExt {
+    fn primary(self) -> ContextValue<Color>;
+    fn active(self) -> ContextValue<Color>;
+}
+
+impl TestThemeRefExt for ContextRef<TestThemeProp> {
+    fn primary(self) -> ContextValue<Color> {
+        self.def(|theme| theme.primary)
+    }
+
+    fn active(self) -> ContextValue<Color> {
+        self.def(|theme| theme.active)
     }
 }
 
@@ -62,15 +92,16 @@ impl TestThemeExt for Style {
 #[test]
 #[serial]
 fn test_active_selector_detected_inside_with_context() {
+    let root = TestRoot::new();
     let view = Empty::new().style(|s| {
         s.size(100.0, 100.0).with_test_theme(|s, t| {
-            s.background(t.primary)
-                .active(|s| s.background(palette::css::RED))
+            s.background(t.primary())
+                .active(|s| s.background(t.def(|_| palette::css::RED)))
         })
     });
     let id = view.view_id();
 
-    let mut harness = HeadlessHarness::new_with_size(view, 100.0, 100.0);
+    let mut harness = HeadlessHarness::new_with_size(root, view, 100.0, 100.0);
 
     // The Active selector should be detected even though it's inside with_context
     assert!(
@@ -83,15 +114,16 @@ fn test_active_selector_detected_inside_with_context() {
 #[test]
 #[serial]
 fn test_hover_selector_detected_inside_with_context() {
+    let root = TestRoot::new();
     let view = Empty::new().style(|s| {
         s.size(100.0, 100.0).with_test_theme(|s, t| {
-            s.background(t.primary)
-                .hover(|s| s.background(palette::css::GREEN))
+            s.background(t.primary())
+                .hover(|s| s.background(t.def(|_| palette::css::GREEN)))
         })
     });
     let id = view.view_id();
 
-    let mut harness = HeadlessHarness::new_with_size(view, 100.0, 100.0);
+    let mut harness = HeadlessHarness::new_with_size(root, view, 100.0, 100.0);
 
     // The Hover selector should be detected even though it's inside with_context
     assert!(
@@ -104,17 +136,18 @@ fn test_hover_selector_detected_inside_with_context() {
 #[test]
 #[serial]
 fn test_multiple_selectors_detected_inside_with_context() {
+    let root = TestRoot::new();
     let view = Empty::new().style(|s| {
-        s.size(100.0, 100.0).with_test_theme(|s, _t| {
-            s.background(palette::css::BLUE)
-                .hover(|s| s.background(palette::css::GREEN))
-                .active(|s| s.background(palette::css::RED))
-                .focus(|s| s.background(palette::css::YELLOW))
+        s.size(100.0, 100.0).with_test_theme(|s, t| {
+            s.background(t.def(|_| palette::css::BLUE))
+                .hover(|s| s.background(t.def(|_| palette::css::GREEN)))
+                .active(|s| s.background(t.def(|_| palette::css::RED)))
+                .focus(|s| s.background(t.def(|_| palette::css::YELLOW)))
         })
     });
     let id = view.view_id();
 
-    let mut harness = HeadlessHarness::new_with_size(view, 100.0, 100.0);
+    let mut harness = HeadlessHarness::new_with_size(root, view, 100.0, 100.0);
 
     assert!(
         harness.has_style_for_selector(id, StyleSelector::Hover),
@@ -134,18 +167,19 @@ fn test_multiple_selectors_detected_inside_with_context() {
 #[test]
 #[serial]
 fn test_active_style_applied_from_with_context() {
+    let root = TestRoot::new();
     let theme = TestTheme::default();
     let view = Empty::new().style(move |s| {
         s.size(100.0, 100.0)
             .set(TestThemeProp, theme)
-            .with_test_theme(|s, _t| {
-                s.background(palette::css::BLUE)
-                    .active(|s| s.background(palette::css::RED))
+            .with_test_theme(|s, t| {
+                s.background(t.def(|_| palette::css::BLUE))
+                    .active(|s| s.background(t.def(|_| palette::css::RED)))
             })
     });
     let id = view.view_id();
 
-    let mut harness = HeadlessHarness::new_with_size(view, 100.0, 100.0);
+    let mut harness = HeadlessHarness::new_with_size(root, view, 100.0, 100.0);
 
     // Initial state: background should be BLUE
     let style = harness.get_computed_style(id);
@@ -184,18 +218,19 @@ fn test_active_style_applied_from_with_context() {
 #[test]
 #[serial]
 fn test_hover_style_applied_from_with_context() {
+    let root = TestRoot::new();
     let theme = TestTheme::default();
     let view = Empty::new().style(move |s| {
         s.size(100.0, 100.0)
             .set(TestThemeProp, theme)
-            .with_test_theme(|s, _t| {
-                s.background(palette::css::BLUE)
-                    .hover(|s| s.background(palette::css::GREEN))
+            .with_test_theme(|s, t| {
+                s.background(t.def(|_| palette::css::BLUE))
+                    .hover(|s| s.background(t.def(|_| palette::css::GREEN)))
             })
     });
     let id = view.view_id();
 
-    let mut harness = HeadlessHarness::new_with_size(view, 100.0, 100.0);
+    let mut harness = HeadlessHarness::new_with_size(root, view, 100.0, 100.0);
 
     // Initial state: background should be BLUE
     let style = harness.get_computed_style(id);
@@ -219,7 +254,7 @@ fn test_hover_style_applied_from_with_context() {
     );
 
     // Move pointer outside - should go back to BLUE
-    harness.pointer_move(150.0, 150.0);
+    harness.pointer_leave();
 
     let style = harness.get_computed_style(id);
     let bg = style.get(Background);
@@ -234,17 +269,18 @@ fn test_hover_style_applied_from_with_context() {
 #[test]
 #[serial]
 fn test_nested_with_context_selectors_detected() {
+    let root = TestRoot::new();
     let view = Empty::new().style(|s| {
         s.size(100.0, 100.0).with_test_theme(|s, _t| {
-            s.with_test_theme(|s, _t| {
-                s.background(palette::css::BLUE)
-                    .active(|s| s.background(palette::css::RED))
+            s.with_test_theme(|s, t| {
+                s.background(t.def(|_| palette::css::BLUE))
+                    .active(|s| s.background(t.def(|_| palette::css::RED)))
             })
         })
     });
     let id = view.view_id();
 
-    let mut harness = HeadlessHarness::new_with_size(view, 100.0, 100.0);
+    let mut harness = HeadlessHarness::new_with_size(root, view, 100.0, 100.0);
 
     // Active selector should still be detected in nested with_context
     assert!(
@@ -257,6 +293,7 @@ fn test_nested_with_context_selectors_detected() {
 #[test]
 #[serial]
 fn test_active_style_uses_theme_values() {
+    let root = TestRoot::new();
     // Set up theme with specific colors
     let theme = TestTheme {
         primary: palette::css::BLUE,
@@ -268,14 +305,14 @@ fn test_active_style_uses_theme_values() {
         s.size(100.0, 100.0)
             .set(TestThemeProp, theme)
             .with_test_theme(|s, t| {
-                let active_color = t.active;
-                s.background(t.primary)
+                let active_color = t.active();
+                s.background(t.primary())
                     .active(move |s| s.background(active_color))
             })
     });
     let id = view.view_id();
 
-    let mut harness = HeadlessHarness::new_with_size(view, 100.0, 100.0);
+    let mut harness = HeadlessHarness::new_with_size(root, view, 100.0, 100.0);
 
     // Initial state: background should be BLUE (primary)
     let style = harness.get_computed_style(id);
@@ -302,25 +339,26 @@ fn test_active_style_uses_theme_values() {
 #[test]
 #[serial]
 fn test_clicking_state_set_for_with_context_active() {
+    let root = TestRoot::new();
     let view = Empty::new().style(|s| {
-        s.size(100.0, 100.0).with_test_theme(|s, _t| {
-            s.background(palette::css::BLUE)
-                .active(|s| s.background(palette::css::RED))
+        s.size(100.0, 100.0).with_test_theme(|s, t| {
+            s.background(t.def(|_| palette::css::BLUE))
+                .active(|s| s.background(t.def(|_| palette::css::RED)))
         })
     });
     let id = view.view_id();
 
-    let mut harness = HeadlessHarness::new_with_size(view, 100.0, 100.0);
+    let mut harness = HeadlessHarness::new_with_size(root, view, 100.0, 100.0);
 
     // Initially not clicking
-    assert!(!harness.is_clicking(id), "Should not be clicking initially");
+    assert!(!harness.is_active(id), "Should not be clicking initially");
 
     // Pointer down
     harness.pointer_down(50.0, 50.0);
 
     // Should be clicking
     assert!(
-        harness.is_clicking(id),
+        harness.is_active(id),
         "Should be clicking after pointer down"
     );
 
@@ -329,7 +367,7 @@ fn test_clicking_state_set_for_with_context_active() {
 
     // No longer clicking
     assert!(
-        !harness.is_clicking(id),
+        !harness.is_active(id),
         "Should not be clicking after pointer up"
     );
 }
@@ -338,18 +376,19 @@ fn test_clicking_state_set_for_with_context_active() {
 #[test]
 #[serial]
 fn test_disabled_selector_detected_inside_with_context() {
+    let root = TestRoot::new();
     let theme = TestTheme::default();
     let view = Empty::new().style(move |s| {
         s.size(100.0, 100.0)
             .set(TestThemeProp, theme)
-            .with_test_theme(|s, _t| {
-                s.background(palette::css::BLUE)
-                    .disabled(|s| s.background(palette::css::GRAY))
+            .with_test_theme(|s, t| {
+                s.background(t.def(|_| palette::css::BLUE))
+                    .disabled(|s| s.background(t.def(|_| palette::css::GRAY)))
             })
     });
     let id = view.view_id();
 
-    let mut harness = HeadlessHarness::new_with_size(view, 100.0, 100.0);
+    let mut harness = HeadlessHarness::new_with_size(root, view, 100.0, 100.0);
 
     assert!(
         harness.has_style_for_selector(id, StyleSelector::Disabled),
@@ -361,18 +400,19 @@ fn test_disabled_selector_detected_inside_with_context() {
 #[test]
 #[serial]
 fn test_focus_selector_detected_inside_with_context() {
+    let root = TestRoot::new();
     let theme = TestTheme::default();
     let view = Empty::new().style(move |s| {
         s.size(100.0, 100.0)
             .set(TestThemeProp, theme)
-            .with_test_theme(|s, _t| {
-                s.background(palette::css::BLUE)
-                    .focus(|s| s.background(palette::css::YELLOW))
+            .with_test_theme(|s, t| {
+                s.background(t.def(|_| palette::css::BLUE))
+                    .focus(|s| s.background(t.def(|_| palette::css::YELLOW)))
             })
     });
     let id = view.view_id();
 
-    let mut harness = HeadlessHarness::new_with_size(view, 100.0, 100.0);
+    let mut harness = HeadlessHarness::new_with_size(root, view, 100.0, 100.0);
 
     assert!(
         harness.has_style_for_selector(id, StyleSelector::Focus),
@@ -384,18 +424,19 @@ fn test_focus_selector_detected_inside_with_context() {
 #[test]
 #[serial]
 fn test_focus_visible_selector_detected_inside_with_context() {
+    let root = TestRoot::new();
     let theme = TestTheme::default();
     let view = Empty::new().style(move |s| {
         s.size(100.0, 100.0)
             .set(TestThemeProp, theme)
-            .with_test_theme(|s, _t| {
-                s.background(palette::css::BLUE)
-                    .focus_visible(|s| s.background(palette::css::ORANGE))
+            .with_test_theme(|s, t| {
+                s.background(t.def(|_| palette::css::BLUE))
+                    .focus_visible(|s| s.background(t.def(|_| palette::css::ORANGE)))
             })
     });
     let id = view.view_id();
 
-    let mut harness = HeadlessHarness::new_with_size(view, 100.0, 100.0);
+    let mut harness = HeadlessHarness::new_with_size(root, view, 100.0, 100.0);
 
     assert!(
         harness.has_style_for_selector(id, StyleSelector::FocusVisible),
@@ -403,22 +444,47 @@ fn test_focus_visible_selector_detected_inside_with_context() {
     );
 }
 
-/// Test that dragging selector inside with_context is detected.
+/// Test that focus_within selector inside with_context is detected.
 #[test]
 #[serial]
-fn test_dragging_selector_detected_inside_with_context() {
+fn test_focus_within_selector_detected_inside_with_context() {
+    let root = TestRoot::new();
     let theme = TestTheme::default();
     let view = Empty::new().style(move |s| {
         s.size(100.0, 100.0)
             .set(TestThemeProp, theme)
-            .with_test_theme(|s, _t| {
-                s.background(palette::css::BLUE)
-                    .drag(|s| s.background(palette::css::PURPLE))
+            .with_test_theme(|s, t| {
+                s.background(t.def(|_| palette::css::BLUE))
+                    .focus_within(|s| s.background(t.def(|_| palette::css::GREEN)))
             })
     });
     let id = view.view_id();
 
-    let mut harness = HeadlessHarness::new_with_size(view, 100.0, 100.0);
+    let mut harness = HeadlessHarness::new_with_size(root, view, 100.0, 100.0);
+
+    assert!(
+        harness.has_style_for_selector(id, StyleSelector::FocusWithin),
+        "FocusWithin selector should be detected inside with_context"
+    );
+}
+
+/// Test that dragging selector inside with_context is detected.
+#[test]
+#[serial]
+fn test_dragging_selector_detected_inside_with_context() {
+    let root = TestRoot::new();
+    let theme = TestTheme::default();
+    let view = Empty::new().style(move |s| {
+        s.size(100.0, 100.0)
+            .set(TestThemeProp, theme)
+            .with_test_theme(|s, t| {
+                s.background(t.def(|_| palette::css::BLUE))
+                    .drag(|s| s.background(t.def(|_| palette::css::PURPLE)))
+            })
+    });
+    let id = view.view_id();
+
+    let mut harness = HeadlessHarness::new_with_size(root, view, 100.0, 100.0);
 
     assert!(
         harness.has_style_for_selector(id, StyleSelector::Dragging),
@@ -430,18 +496,19 @@ fn test_dragging_selector_detected_inside_with_context() {
 #[test]
 #[serial]
 fn test_selected_selector_detected_inside_with_context() {
+    let root = TestRoot::new();
     let theme = TestTheme::default();
     let view = Empty::new().style(move |s| {
         s.size(100.0, 100.0)
             .set(TestThemeProp, theme)
-            .with_test_theme(|s, _t| {
-                s.background(palette::css::BLUE)
-                    .selected(|s| s.background(palette::css::CYAN))
+            .with_test_theme(|s, t| {
+                s.background(t.def(|_| palette::css::BLUE))
+                    .selected(|s| s.background(t.def(|_| palette::css::CYAN)))
             })
     });
     let id = view.view_id();
 
-    let mut harness = HeadlessHarness::new_with_size(view, 100.0, 100.0);
+    let mut harness = HeadlessHarness::new_with_size(root, view, 100.0, 100.0);
 
     assert!(
         harness.has_style_for_selector(id, StyleSelector::Selected),
@@ -453,22 +520,23 @@ fn test_selected_selector_detected_inside_with_context() {
 #[test]
 #[serial]
 fn test_disabled_style_applied_from_with_context() {
+    let root = TestRoot::new();
     let theme = TestTheme::default();
     let view = Empty::new().style(move |s| {
         s.size(100.0, 100.0)
             .set(TestThemeProp, theme)
-            .with_test_theme(|s, _t| {
-                s.background(palette::css::BLUE)
-                    .set_disabled(true)
-                    .disabled(|s| s.background(palette::css::GRAY))
+            .with_test_theme(|s, t| {
+                s.background(t.def(|_| palette::css::BLUE))
+                    .set_disabled(t.def(|_| true))
+                    .disabled(|s| s.background(t.def(|_| palette::css::GRAY)))
             })
     });
     let id = view.view_id();
 
-    let mut harness = HeadlessHarness::new_with_size(view, 100.0, 100.0);
+    let mut harness = HeadlessHarness::new_with_size(root, view, 100.0, 100.0);
 
     // Request style recalc to apply disabled selector
-    id.request_style();
+    // id.request_style();
     harness.rebuild();
 
     // Background should be GRAY (disabled)
@@ -485,6 +553,7 @@ fn test_disabled_style_applied_from_with_context() {
 #[test]
 #[serial]
 fn test_with_context_selectors_merge_correctly() {
+    let root = TestRoot::new();
     let theme = TestTheme::default();
     let view = Empty::new()
         .style(move |s| {
@@ -495,11 +564,11 @@ fn test_with_context_selectors_merge_correctly() {
         })
         .style(|s| {
             // Second style call with active selector inside with_context
-            s.with_test_theme(|s, _t| s.active(|s| s.background(palette::css::RED)))
+            s.with_test_theme(|s, t| s.active(|s| s.background(t.def(|_| palette::css::RED))))
         });
     let id = view.view_id();
 
-    let mut harness = HeadlessHarness::new_with_size(view, 100.0, 100.0);
+    let mut harness = HeadlessHarness::new_with_size(root, view, 100.0, 100.0);
 
     // Active selector should be detected
     assert!(
@@ -528,13 +597,14 @@ fn test_with_context_selectors_merge_correctly() {
 #[test]
 #[serial]
 fn test_active_style_triggers_paint() {
+    let root = TestRoot::new();
     let view = Empty::new().style(|s| {
         s.size(100.0, 100.0)
             .active(|s| s.background(palette::css::RED))
     });
     let id = view.view_id();
 
-    let mut harness = HeadlessHarness::new_with_size(view, 100.0, 100.0);
+    let mut harness = HeadlessHarness::new_with_size(root, view, 100.0, 100.0);
 
     // Check that view has Active selector
     assert!(
@@ -554,7 +624,7 @@ fn test_active_style_triggers_paint() {
 
     // Check clicking state
     assert!(
-        harness.is_clicking(id),
+        harness.is_active(id),
         "Should be clicking after pointer down"
     );
 
@@ -570,13 +640,14 @@ fn test_active_style_triggers_paint() {
 #[test]
 #[serial]
 fn test_style_request_on_clicking() {
+    let root = TestRoot::new();
     let view = Empty::new().style(|s| {
         s.size(100.0, 100.0)
             .active(|s| s.background(palette::css::RED))
     });
     let id = view.view_id();
 
-    let mut harness = HeadlessHarness::new_with_size(view, 100.0, 100.0);
+    let mut harness = HeadlessHarness::new_with_size(root, view, 100.0, 100.0);
 
     // Verify selector is detected
     assert!(
@@ -585,14 +656,14 @@ fn test_style_request_on_clicking() {
     );
 
     // Check clicking state before
-    assert!(!harness.is_clicking(id), "Should not be clicking initially");
+    assert!(!harness.is_active(id), "Should not be clicking initially");
 
     // Pointer down
     harness.pointer_down(50.0, 50.0);
 
     // Check clicking state after
     assert!(
-        harness.is_clicking(id),
+        harness.is_active(id),
         "Should be clicking after pointer down"
     );
 

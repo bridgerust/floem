@@ -1,11 +1,10 @@
 use floem::{
-    imbl,
     prelude::*,
     reactive::Effect,
     style::CursorStyle,
-    taffy::{prelude::*, Line},
-    text::Weight,
-    theme::{border_style, StyleThemeExt},
+    taffy::{Line, prelude::*},
+    text::FontWeight,
+    theme::{StyleThemeExt, border_style},
 };
 
 use crate::{
@@ -29,6 +28,7 @@ pub fn list_view() -> impl IntoView {
             .grid_template_rows([auto(), auto(), length(20.), auto(), auto()])
             .row_gap(20)
             .justify_items(JustifyItems::Center)
+            .selectable(false)
     })
 }
 
@@ -37,11 +37,12 @@ fn simple_list() -> impl IntoView {
         .list()
         .style(|s| s.width_full().class(LabelClass, |s| s.height(24)))
         .scroll()
-        .style(|s| s.size(100, 200).apply(border_style(true)))
+        .style(|s| s.size(100, 500).apply(border_style(true)))
 }
 
 fn enhanced_list() -> impl IntoView {
-    let long_list: imbl::Vector<(bool, i32)> = (0..1000).map(|v| (true, v)).collect();
+    let long_list: Vec<(usize, (bool, i32))> =
+        (0..=100000).map(|v| (v as usize, (true, v))).collect();
     let long_list = RwSignal::new(long_list);
 
     let list_width = 180.0;
@@ -52,7 +53,7 @@ fn enhanced_list() -> impl IntoView {
 
     let x_mark = move |index| {
         svg(CROSS_SVG)
-            .on_click_stop(move |_| {
+            .action(move || {
                 print!("Item Removed");
                 long_list.update(|list| {
                     list.remove(index);
@@ -60,7 +61,7 @@ fn enhanced_list() -> impl IntoView {
             })
             .style(|s| {
                 s.size(18.0, 18.)
-                    .font_weight(Weight::BOLD)
+                    .font_weight(FontWeight::BOLD)
                     .cursor(CursorStyle::Pointer)
                     .border(1.0)
                     .border_radius(16.0)
@@ -80,23 +81,27 @@ fn enhanced_list() -> impl IntoView {
             let state = checkbox_state.get();
             long_list.update(|list| {
                 // because this is an immutable vector, getting the index will always result in the correct item even if we remove elements.
-                if let Some((s, _v)) = list.get_mut(index) {
+                if let Some((_, (s, _v))) = list.get_mut(index) {
                     *s = state;
                 };
             });
         });
 
-        Stack::horizontal((
-            Checkbox::new_rw(checkbox_state)
-                .style(|s| s.with_theme(|s, t| s.selected(|s| s.color(t.text())))),
-            label(item),
-            x_mark(index),
-        ))
-        .style(move |s| s.items_center().gap(5).padding_left(6).height(item_height))
+        Stack::horizontal((Checkbox::new_rw(checkbox_state), label(item), x_mark(index))).style(
+            move |s| {
+                s.items_center()
+                    .gap(5)
+                    .padding_left(6)
+                    .height(item_height)
+                    .class(CheckboxClass, |s| {
+                        s.with_theme(|s, t| s.selected(|s| s.color(t.text())))
+                    })
+            },
+        )
     };
 
-    VirtualList::with_view(move || long_list.get().enumerate(), item_view)
+    VirtualList::with_view(move || long_list, item_view)
         .style(move |s| s.flex_col().flex_grow(1.0))
         .scroll()
-        .style(move |s| s.width(list_width).height(200.0).apply(border_style(true)))
+        .style(move |s| s.width(list_width).height(500.0).apply(border_style(true)))
 }

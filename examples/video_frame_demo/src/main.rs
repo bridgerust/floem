@@ -5,7 +5,8 @@
 //!   - red increasing left -> right
 //!   - green increasing top -> bottom
 //!   - a blue checkerboard
-//! (so colour order, orientation, and scaling are all verifiable by eye).
+//!
+//! The pattern makes colour order, orientation, and scaling visible.
 //!
 //! Run:  cargo run -p video_frame_demo
 
